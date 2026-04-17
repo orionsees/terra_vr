@@ -36,8 +36,9 @@ Typical usage:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+import warnings
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 from xml.etree import ElementTree as ET
@@ -54,7 +55,7 @@ def _local_name(tag: str) -> str:
 
 def _find_child(elem: ET.Element, tag_name: str) -> ET.Element | None:
     """Find first direct child by local tag name."""
-    for child in list(elem):
+    for child in elem:
         if _local_name(child.tag) == tag_name:
             return child
     return None
@@ -127,7 +128,12 @@ def _rotvec_to_matrix(rotvec: np.ndarray) -> np.ndarray:
 
 
 def _matrix_to_rotvec(rotation: np.ndarray) -> np.ndarray:
-    """Convert rotation matrix to axis-angle rotation vector."""
+    """Convert rotation matrix to axis-angle rotation vector.
+
+    Uses a robust extraction that handles the near-π case by recovering
+    signs from off-diagonal elements of the rotation matrix rather than
+    from the (near-zero) skew-symmetric part.
+    """
     r = np.asarray(rotation, dtype=float)
     if r.shape != (3, 3):
         raise ValueError(f"Expected 3x3 rotation matrix, got shape={r.shape}")
@@ -140,24 +146,24 @@ def _matrix_to_rotvec(rotation: np.ndarray) -> np.ndarray:
         return np.zeros(3, dtype=float)
 
     if abs(math.pi - theta) < 1e-6:
-        # Robust path close to pi.
+        # Robust path close to π: recover axis from the diagonal, then use
+        # the largest component to determine signs of the other two from
+        # off-diagonal entries (which equal 2*ai*aj near θ=π).
         diag = np.diag(r)
-        axis = np.array(
-            [
-                math.sqrt(max(0.0, (diag[0] + 1.0) * 0.5)),
-                math.sqrt(max(0.0, (diag[1] + 1.0) * 0.5)),
-                math.sqrt(max(0.0, (diag[2] + 1.0) * 0.5)),
-            ],
-            dtype=float,
-        )
+        # Pick the component with the largest magnitude.
+        i = int(np.argmax(diag))
+        j = (i + 1) % 3
+        k = (i + 2) % 3
 
-        # Recover signs from off-diagonal terms.
-        if r[2, 1] - r[1, 2] < 0.0:
-            axis[0] = -axis[0]
-        if r[0, 2] - r[2, 0] < 0.0:
-            axis[1] = -axis[1]
-        if r[1, 0] - r[0, 1] < 0.0:
-            axis[2] = -axis[2]
+        axis = np.zeros(3, dtype=float)
+        axis[i] = math.sqrt(max(0.0, (diag[i] + 1.0) * 0.5))
+        if axis[i] > 1e-6:
+            axis[j] = r[i, j] / (2.0 * axis[i])
+            axis[k] = r[i, k] / (2.0 * axis[i])
+        else:
+            # Fallback: shouldn't happen given argmax, but be safe.
+            axis[j] = math.sqrt(max(0.0, (diag[j] + 1.0) * 0.5))
+            axis[k] = math.sqrt(max(0.0, (diag[k] + 1.0) * 0.5))
 
         n = float(np.linalg.norm(axis))
         if n < 1e-12:
@@ -196,6 +202,21 @@ def _rotation_about_axis(axis: np.ndarray, angle: float) -> np.ndarray:
     return _rotvec_to_matrix(ax * angle)
 
 
+def _wrap_angle(angle: float) -> float:
+    """Wrap angle to [-π, π]."""
+    return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def _validate_so3(rotation: np.ndarray, tol: float = 1e-4) -> None:
+    """Raise if rotation is not a valid SO(3) matrix."""
+    det = float(np.linalg.det(rotation))
+    if abs(det - 1.0) > tol:
+        raise ValueError(
+            f"Rotation block is not a valid SO(3) matrix (det={det:.6f}). "
+            "Ensure desired_ee_pose contains an orthonormal rotation."
+        )
+
+
 @dataclass(frozen=True)
 class _URDFJoint:
     """Minimal URDF joint info for FK/IK."""
@@ -208,6 +229,17 @@ class _URDFJoint:
     axis: np.ndarray
     lower_limit: float | None
     upper_limit: float | None
+
+
+@dataclass(frozen=True)
+class IKResult:
+    """Result of an inverse-kinematics solve."""
+
+    joint_pos_deg: np.ndarray
+    converged: bool
+    position_error_m: float
+    orientation_error_rad: float
+    iterations: int
 
 
 @dataclass(frozen=True)
@@ -263,7 +295,9 @@ class SO101Kinematics:
 
         self._joints_by_name, self._joints_by_child_link = self._parse_urdf(self.urdf_path)
         self._chain_joints = self._build_chain_to_target(self.target_frame_name)
-        chain_joint_names = [j.name for j in self._chain_joints if j.joint_type in {"revolute", "continuous", "prismatic"}]
+        chain_joint_names = [
+            j.name for j in self._chain_joints if j.joint_type in {"revolute", "continuous", "prismatic"}
+        ]
 
         if joint_names is None:
             self.joint_names = list(chain_joint_names)
@@ -300,6 +334,13 @@ class SO101Kinematics:
         self._ik_damping = 5e-3
         self._ik_max_step_rad = 0.25
         self._ik_joint_step_tolerance_rad = 1e-7
+
+    def __repr__(self) -> str:
+        return (
+            f"SO101Kinematics(urdf_path={self.urdf_path!r}, "
+            f"target_frame={self.target_frame_name!r}, "
+            f"joints={self.joint_names})"
+        )
 
     @staticmethod
     def _parse_urdf(urdf_path: str) -> tuple[dict[str, _URDFJoint], dict[str, _URDFJoint]]:
@@ -385,7 +426,6 @@ class SO101Kinematics:
 
     def _build_chain_to_target(self, target_frame_name: str) -> list[_URDFJoint]:
         """Build ordered joint chain from root to target link frame."""
-        # In this lightweight implementation, target frame is expected to be a link name.
         if target_frame_name not in self._joints_by_child_link:
             all_child_links = sorted(self._joints_by_child_link.keys())
             raise ValueError(
@@ -403,21 +443,29 @@ class SO101Kinematics:
         chain.reverse()
         return chain
 
-    def _coerce_joint_vector_radians(self, joint_pos_rad: Sequence[float] | np.ndarray) -> np.ndarray:
-        q_rad = np.asarray(joint_pos_rad, dtype=float)
-        if q_rad.ndim != 1:
-            raise ValueError(f"Expected a 1-D joint vector, got shape={q_rad.shape}")
-        if q_rad.size < len(self.joint_names):
-            raise ValueError(f"Expected at least {len(self.joint_names)} joints, got {q_rad.size}.")
-        return q_rad
+    def _coerce_joint_vector(self, joint_pos: Sequence[float] | np.ndarray) -> np.ndarray:
+        """Validate and return a 1-D joint vector with at least len(self.joint_names) entries."""
+        q = np.asarray(joint_pos, dtype=float)
+        if q.ndim != 1:
+            raise ValueError(f"Expected a 1-D joint vector, got shape={q.shape}")
+        if q.size < len(self.joint_names):
+            raise ValueError(
+                f"Expected at least {len(self.joint_names)} joints, got {q.size}."
+            )
+        return q
 
     def _clip_to_joint_limits(self, q_rad: np.ndarray) -> np.ndarray:
+        """Clip joint values (radians) to URDF limits and wrap continuous joints."""
         for i, joint_name in enumerate(self.joint_names):
-            lower, upper = self._joint_limits[joint_name]
-            if lower is not None:
-                q_rad[i] = max(q_rad[i], lower)
-            if upper is not None:
-                q_rad[i] = min(q_rad[i], upper)
+            joint = self._joints_by_name[joint_name]
+            if joint.joint_type == "continuous":
+                q_rad[i] = _wrap_angle(q_rad[i])
+            else:
+                lower, upper = self._joint_limits[joint_name]
+                if lower is not None:
+                    q_rad[i] = max(q_rad[i], lower)
+                if upper is not None:
+                    q_rad[i] = min(q_rad[i], upper)
         return q_rad
 
     def _fk_from_control_joints_radians(self, q_control_rad: np.ndarray) -> np.ndarray:
@@ -442,16 +490,6 @@ class SO101Kinematics:
 
         return t
 
-    def _coerce_joint_vector(self, joint_pos_deg: Sequence[float] | np.ndarray) -> np.ndarray:
-        q_deg = np.asarray(joint_pos_deg, dtype=float)
-        if q_deg.ndim != 1:
-            raise ValueError(f"Expected a 1-D joint vector, got shape={q_deg.shape}")
-        if q_deg.size < len(self.joint_names):
-            raise ValueError(
-                f"Expected at least {len(self.joint_names)} joints, got {q_deg.size}."
-            )
-        return q_deg
-
     def forward_kinematics(self, joint_pos_deg: Sequence[float] | np.ndarray) -> np.ndarray:
         """Compute EE 4x4 pose from joint positions in degrees."""
         q_deg = self._coerce_joint_vector(joint_pos_deg)
@@ -466,12 +504,52 @@ class SO101Kinematics:
         position_weight: float = 1.0,
         orientation_weight: float = 0.01,
         preserve_extra_joints: bool = True,
+        warn_on_non_convergence: bool = True,
     ) -> np.ndarray:
-        """Compute joint positions in degrees that best match a desired EE 4x4 pose."""
+        """Compute joint positions in degrees that best match a desired EE 4x4 pose.
+
+        See :meth:`inverse_kinematics_full` for a variant that returns
+        convergence diagnostics in an :class:`IKResult`.
+        """
+        result = self.inverse_kinematics_full(
+            current_joint_pos_deg=current_joint_pos_deg,
+            desired_ee_pose=desired_ee_pose,
+            position_weight=position_weight,
+            orientation_weight=orientation_weight,
+        )
+
+        if not result.converged and warn_on_non_convergence:
+            warnings.warn(
+                f"IK did not converge after {result.iterations} iterations. "
+                f"Position error: {result.position_error_m:.6f} m, "
+                f"Orientation error: {result.orientation_error_rad:.6f} rad",
+                stacklevel=2,
+            )
+
+        q_solution_deg = result.joint_pos_deg
+        q_curr_deg = self._coerce_joint_vector(current_joint_pos_deg)
+
+        if preserve_extra_joints and q_curr_deg.size > len(self.joint_names):
+            out = np.array(q_curr_deg, copy=True)
+            out[: len(self.joint_names)] = q_solution_deg
+            return out
+
+        return q_solution_deg
+
+    def inverse_kinematics_full(
+        self,
+        current_joint_pos_deg: Sequence[float] | np.ndarray,
+        desired_ee_pose: np.ndarray,
+        position_weight: float = 1.0,
+        orientation_weight: float = 0.01,
+    ) -> IKResult:
+        """Solve IK and return full diagnostics via :class:`IKResult`."""
         q_curr_deg = self._coerce_joint_vector(current_joint_pos_deg)
         t_des = np.asarray(desired_ee_pose, dtype=float)
         if t_des.shape != (4, 4):
             raise ValueError(f"Expected desired_ee_pose shape (4, 4), got {t_des.shape}")
+
+        _validate_so3(t_des[:3, :3])
 
         if position_weight < 0.0 or orientation_weight < 0.0:
             raise ValueError("position_weight and orientation_weight must be non-negative")
@@ -480,7 +558,12 @@ class SO101Kinematics:
         q_solution_rad = np.deg2rad(q_curr_deg[:n]).astype(float)
         q_solution_rad = self._clip_to_joint_limits(q_solution_rad)
 
-        for _ in range(self._ik_max_iterations):
+        converged = False
+        pos_err = np.zeros(3, dtype=float)
+        ori_err = np.zeros(3, dtype=float)
+        iteration = 0
+
+        for iteration in range(1, self._ik_max_iterations + 1):
             t_curr = self._fk_from_control_joints_radians(q_solution_rad)
 
             pos_err = t_des[:3, 3] - t_curr[:3, 3]
@@ -491,6 +574,7 @@ class SO101Kinematics:
                 float(np.linalg.norm(pos_err)) < self._ik_position_tolerance_m
                 and float(np.linalg.norm(ori_err)) < self._ik_orientation_tolerance_rad
             ):
+                converged = True
                 break
 
             jac = np.zeros((6, n), dtype=float)
@@ -533,16 +617,20 @@ class SO101Kinematics:
             q_solution_rad = self._clip_to_joint_limits(q_solution_rad)
 
             if step_norm < self._ik_joint_step_tolerance_rad:
+                # Step too small to make progress; check if we're close enough.
+                converged = (
+                    float(np.linalg.norm(pos_err)) < self._ik_position_tolerance_m
+                    and float(np.linalg.norm(ori_err)) < self._ik_orientation_tolerance_rad
+                )
                 break
 
-        q_solution_deg = np.rad2deg(q_solution_rad)
-
-        if preserve_extra_joints and q_curr_deg.size > len(self.joint_names):
-            result = np.array(q_curr_deg, copy=True)
-            result[: len(self.joint_names)] = q_solution_deg
-            return result
-
-        return q_solution_deg
+        return IKResult(
+            joint_pos_deg=np.rad2deg(q_solution_rad),
+            converged=converged,
+            position_error_m=float(np.linalg.norm(pos_err)),
+            orientation_error_rad=float(np.linalg.norm(ori_err)),
+            iterations=iteration,
+        )
 
     def joints_dict_to_vector(
         self,

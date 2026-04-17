@@ -4,6 +4,10 @@
 Subscribes to /right_wrist (PoseStamped) from the TCP listener and publishes
 joint commands to /so101/cmd/set_positions (String/JSON) via the SO101 bridge.
 
+Uses incremental (frame-to-frame) delta control: each cycle computes the
+displacement since the *previous* frame rather than from a fixed origin.
+This avoids drift, enables clutch/re-centering, and keeps IK stable.
+
 Coordinate mapping (VR → SO101):
     x_vr  → -x_arm
     y_vr  → +z_arm
@@ -22,7 +26,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import String
+from std_msgs.msg import String, Float32
 from ament_index_python.packages import get_package_share_directory
 
 from so101_kinematics import SO101Kinematics, EndEffectorPose
@@ -35,7 +39,8 @@ class SO101TeleopNode(Node):
         # --- Parameters ---
         package_share_dir = get_package_share_directory('arm_vr')
         urdf_path = os.path.join(package_share_dir, 'urdf', 'so101_follower.urdf')
-        self.declare_parameter("target_frame", "jaw_link")
+        config_path = os.path.join(package_share_dir, 'config', 'right_arm.json')
+        self.declare_parameter("target_frame", "gripper_link")
         self.declare_parameter("scale", 1.0)  # displacement multiplier
         self.declare_parameter(
             "joint_names",
@@ -44,6 +49,14 @@ class SO101TeleopNode(Node):
         target_frame = self.get_parameter("target_frame").value
         joint_names = list(self.get_parameter("joint_names").value)
         self.scale = self.get_parameter("scale").value
+
+        # Load gripper servo config
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        self.gripper_config = config["gripper"]
+        self.gripper_range_min = self.gripper_config["range_min"]
+        self.gripper_range_max = self.gripper_config["range_max"]
+        self.gripper_motor_id = self.gripper_config["id"]
 
         # --- Kinematics ---
         self.kin = SO101Kinematics(
@@ -57,12 +70,16 @@ class SO101TeleopNode(Node):
         # Start all joints at 0°
         self.current_joint_deg = np.zeros(self.n_joints, dtype=float)
         self.home_ee = self.kin.forward_kinematics(self.current_joint_deg)  # 4x4
-        self.home_ee_pos = self.home_ee[:3, 3].copy()  # (x, y, z) of EE at home
 
-        self.initial_wrist_pos: np.ndarray | None = None  # first VR wrist position
+        # Desired EE pose starts at home — updated incrementally each frame
+        self.desired_ee = self.home_ee.copy()
+
+        # Previous wrist position (set on first message)
+        self.prev_wrist_pos: np.ndarray | None = None
 
         # --- Publishers / Subscribers ---
         self.pub_cmd = self.create_publisher(String, "/so101/cmd/set_positions", 10)
+        self.pub_cmd_raw = self.create_publisher(String, "/so101/cmd/set_positions_raw", 10)
 
         self.create_subscription(
             PoseStamped,
@@ -71,11 +88,21 @@ class SO101TeleopNode(Node):
             10,
         )
 
+        self.create_subscription(
+            Float32,
+            "/right_hand/pinch_distance",
+            self._on_pinch_distance,
+            10,
+        )
+
         # Send the arm to home (all zeros) on startup
         self._publish_joint_command(self.current_joint_deg)
 
         self.get_logger().info(
-            "SO101 teleop node ready — waiting for first /right_wrist pose…"
+            "SO101 teleop node ready (incremental delta mode) — waiting for first /right_wrist pose…"
+        )
+        self.get_logger().info(
+            f"Gripper control enabled: pinch_distance [0-10cm] → motor {self.gripper_motor_id} position [{self.gripper_range_min}-{self.gripper_range_max}]"
         )
 
     # ------------------------------------------------------------------
@@ -105,40 +132,71 @@ class SO101TeleopNode(Node):
             msg.pose.position.z,
         ], dtype=float)
 
-        # Capture the very first wrist position as the reference origin
-        if self.initial_wrist_pos is None:
-            self.initial_wrist_pos = vr_pos.copy()
+        # First frame: just store as reference, no motion
+        if self.prev_wrist_pos is None:
+            self.prev_wrist_pos = vr_pos.copy()
             self.get_logger().info(
-                f"Initial wrist position captured: {self.initial_wrist_pos}"
+                f"Initial wrist position captured: {self.prev_wrist_pos}"
             )
             return
 
-        # Step 1: displacement in VR space
-        d_vr = vr_pos - self.initial_wrist_pos
+        # Step 1: frame-to-frame delta in VR space
+        d_vr = vr_pos - self.prev_wrist_pos
 
         # Step 2: map to arm frame and apply scale
         d_arm = self._vr_displacement_to_arm(d_vr) * self.scale
 
-        # Step 3: desired EE position = home EE position + mapped displacement
-        desired_ee_pos = self.home_ee_pos + d_arm
-
-        # Build desired 4×4 pose (keep home orientation, only change position)
-        desired_ee = self.home_ee.copy()
-        desired_ee[:3, 3] = desired_ee_pos
+        # Step 3: accumulate into desired EE pose (position only, keep orientation)
+        self.desired_ee[:3, 3] += d_arm
 
         # Step 4: solve IK from current joint state
         try:
             target_deg = self.kin.inverse_kinematics(
                 current_joint_pos_deg=self.current_joint_deg,
-                desired_ee_pose=desired_ee,
+                desired_ee_pose=self.desired_ee,
             )
         except Exception as exc:
             self.get_logger().warn(f"IK failed: {exc}")
+            # Still update prev so we don't accumulate a huge jump next frame
+            self.prev_wrist_pos = vr_pos.copy()
             return
 
-        # Step 5: publish
+        # Step 5: publish and update state
         self.current_joint_deg = target_deg[: self.n_joints].copy()
         self._publish_joint_command(self.current_joint_deg)
+
+        # Update previous wrist position for next delta
+        self.prev_wrist_pos = vr_pos.copy()
+
+    # ------------------------------------------------------------------
+    # Pinch distance callback for gripper control
+    # ------------------------------------------------------------------
+    def _on_pinch_distance(self, msg: Float32) -> None:
+        """Map pinch distance (0-10 cm) to gripper servo position.
+
+        Linear mapping:
+        - 0 cm → range_min
+        - 10 cm → range_max
+        """
+        distance_cm = msg.data
+
+        # Clamp distance to [0, 10]
+        distance_cm = max(0.0, min(10.0, distance_cm))
+
+        # Linear interpolation
+        fraction = distance_cm / 10.0  # 0.0 to 1.0
+        servo_position = self.gripper_range_min + fraction * (self.gripper_range_max - self.gripper_range_min)
+        servo_position = int(servo_position)
+
+        # Publish raw servo command
+        cmd = {str(self.gripper_motor_id): servo_position}
+        msg_raw = String()
+        msg_raw.data = json.dumps(cmd)
+        self.pub_cmd_raw.publish(msg_raw)
+
+        self.get_logger().debug(
+            f"Pinch distance: {distance_cm:.2f} cm → Motor {self.gripper_motor_id} position: {servo_position}"
+        )
 
     # ------------------------------------------------------------------
     # Helpers
