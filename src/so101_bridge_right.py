@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""SO101 ROS2 Bridge — Serial-to-ROS2 gateway for the SO101/ST3215 robotic arm.
+"""SO101 ROS2 Bridge (Right Arm) — Serial-to-ROS2 gateway for the right SO101/ST3215 robotic arm.
 
-This bridge connects to the arm via serial and publishes joint states while
+This bridge connects to the right arm via serial and publishes joint states while
 subscribing to command topics for motion control.
 
 Launch with:
@@ -39,9 +39,9 @@ def _clock_sec(node):
     return float(stamp.sec) + float(stamp.nanosec) * 1e-9
 
 
-class SO101Bridge(Node):
+class SO101BridgeRight(Node):
     def __init__(self, args):
-        super().__init__("so101_bridge")
+        super().__init__("so101_bridge_right")
 
         module_dir = Path(args.module_dir).expanduser().resolve()
         if str(module_dir) not in sys.path:
@@ -69,33 +69,33 @@ class SO101Bridge(Node):
 
         qos = QoSProfile(depth=10)
 
-        self.pub_joint_states = self.create_publisher(JointState, "joint_states", qos)
+        self.pub_joint_states = self.create_publisher(JointState, "/right_arm/joint_states", qos)
         self.pub_raw_positions = self.create_publisher(
-            Int32MultiArray, "raw_positions", qos
+            Int32MultiArray, "/right_arm/raw_positions", qos
         )
         self.pub_temp = self.create_publisher(
-            Float64MultiArray, "temp", qos
+            Float64MultiArray, "/right_arm/temp", qos
         )
 
         self.create_subscription(
             String,
-            "cmd/set_positions",
+            "/right_arm/cmd/set_positions",
             self._on_set_positions_topic,
             qos,
         )
         self.create_subscription(
             String,
-            "cmd/set_positions_raw",
+            "/right_arm/cmd/set_positions_raw",
             self._on_set_positions_raw_topic,
             qos,
         )
 
-        self.create_service(AddTwoInts, "ping", self._on_ping)
-        self.create_service(Trigger, "scan", self._on_scan)
-        self.create_service(Trigger, "set_positions", self._on_set_positions_service)
+        self.create_service(AddTwoInts, "/right_arm/ping", self._on_ping)
+        self.create_service(Trigger, "/right_arm/scan", self._on_scan)
+        self.create_service(Trigger, "/right_arm/set_positions", self._on_set_positions_service)
         self.create_service(
             Trigger,
-            "set_positions_raw",
+            "/right_arm/set_positions_raw",
             self._on_set_positions_raw_service,
         )
 
@@ -106,7 +106,7 @@ class SO101Bridge(Node):
         self.create_timer(1.0 / hz, self._publish_feedback)
 
         self.get_logger().info(
-            f"SO101 bridge ready on port={args.port}, feedback_rate_hz={hz:.2f}"
+            f"SO101 right arm bridge ready on port={args.port}, feedback_rate_hz={hz:.2f}"
         )
 
     def destroy_node(self):
@@ -250,7 +250,7 @@ class SO101Bridge(Node):
                 except Exception:
                     temperatures.append(float("nan"))
 
-            # Publish /so101/joint_states (includes angles, velocities, and torques)
+            # Publish joint states
             js = JointState()
             js.header.stamp = self.get_clock().now().to_msg()
             js.name = list(self.joint_names)
@@ -266,12 +266,12 @@ class SO101Bridge(Node):
             js.effort = list(efforts)
             self.pub_joint_states.publish(js)
 
-            # Publish /so101/raw_positions
+            # Publish raw positions
             raw_msg = Int32MultiArray()
             raw_msg.data = list(raw_positions)
             self.pub_raw_positions.publish(raw_msg)
 
-            # Publish /so101/temp
+            # Publish temperatures
             temp_msg = Float64MultiArray()
             temp_msg.data = list(temperatures)
             self.pub_temp.publish(temp_msg)
@@ -295,7 +295,7 @@ def main():
     rclpy.init()
     node = None
     try:
-        node = SO101Bridge(args)
+        node = SO101BridgeRight(args)
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass

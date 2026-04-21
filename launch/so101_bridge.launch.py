@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction, PushROSNamespace
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.substitutions import LaunchConfiguration
 from launch_ros.substitutions import FindPackageShare
 
@@ -8,7 +8,8 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     # Find the installed package directory
     package_share_dir = FindPackageShare("arm_vr")
-    bridge_script = [package_share_dir, "/src/so101_bridge.py"]
+    bridge_left_script = [package_share_dir, "/src/so101_bridge_left.py"]
+    bridge_right_script = [package_share_dir, "/src/so101_bridge_right.py"]
     tcp_wireless_ros = [package_share_dir, "/src/tcp_wireless_ros.py"]
     urdf_file = [package_share_dir, "/urdf/so101_follower.urdf"]
     module_dir_default = [package_share_dir, "/src"]
@@ -51,61 +52,51 @@ def generate_launch_description():
                 default_value="192.168.123.102",
                 description="Host IP for wireless TCP connection",
             ),
-            # Right arm bridge in its own namespace
-            GroupAction(
-                actions=[
-                    PushROSNamespace("right_arm"),
-                    ExecuteProcess(
-                        cmd=[
-                            "python3",
-                            bridge_script,
-                            "--module-dir",
-                            LaunchConfiguration("module_dir"),
-                            "--port",
-                            LaunchConfiguration("right_arm_port"),
-                            "--calibration-file",
-                            LaunchConfiguration("right_calibration_file"),
-                            "--baudrate",
-                            LaunchConfiguration("baudrate"),
-                            "--serial-timeout",
-                            LaunchConfiguration("serial_timeout"),
-                            "--reply-timeout",
-                            LaunchConfiguration("reply_timeout"),
-                            "--feedback-rate-hz",
-                            LaunchConfiguration("feedback_rate_hz"),
-                        ],
-                        output="screen",
-                        emulate_tty=True,
-                    ),
-                ]
+            # Right arm bridge
+            ExecuteProcess(
+                cmd=[
+                    "python3",
+                    bridge_right_script,
+                    "--module-dir",
+                    LaunchConfiguration("module_dir"),
+                    "--port",
+                    LaunchConfiguration("right_arm_port"),
+                    "--calibration-file",
+                    LaunchConfiguration("right_calibration_file"),
+                    "--baudrate",
+                    LaunchConfiguration("baudrate"),
+                    "--serial-timeout",
+                    LaunchConfiguration("serial_timeout"),
+                    "--reply-timeout",
+                    LaunchConfiguration("reply_timeout"),
+                    "--feedback-rate-hz",
+                    LaunchConfiguration("feedback_rate_hz"),
+                ],
+                output="screen",
+                emulate_tty=True,
             ),
-            # Left arm bridge in its own namespace
-            GroupAction(
-                actions=[
-                    PushROSNamespace("left_arm"),
-                    ExecuteProcess(
-                        cmd=[
-                            "python3",
-                            bridge_script,
-                            "--module-dir",
-                            LaunchConfiguration("module_dir"),
-                            "--port",
-                            LaunchConfiguration("left_arm_port"),
-                            "--calibration-file",
-                            LaunchConfiguration("left_calibration_file"),
-                            "--baudrate",
-                            LaunchConfiguration("baudrate"),
-                            "--serial-timeout",
-                            LaunchConfiguration("serial_timeout"),
-                            "--reply-timeout",
-                            LaunchConfiguration("reply_timeout"),
-                            "--feedback-rate-hz",
-                            LaunchConfiguration("feedback_rate_hz"),
-                        ],
-                        output="screen",
-                        emulate_tty=True,
-                    ),
-                ]
+            # Left arm bridge
+            ExecuteProcess(
+                cmd=[
+                    "python3",
+                    bridge_left_script,
+                    "--module-dir",
+                    LaunchConfiguration("module_dir"),
+                    "--port",
+                    LaunchConfiguration("left_arm_port"),
+                    "--calibration-file",
+                    LaunchConfiguration("left_calibration_file"),
+                    "--baudrate",
+                    LaunchConfiguration("baudrate"),
+                    "--serial-timeout",
+                    LaunchConfiguration("serial_timeout"),
+                    "--reply-timeout",
+                    LaunchConfiguration("reply_timeout"),
+                    "--feedback-rate-hz",
+                    LaunchConfiguration("feedback_rate_hz"),
+                ],
+                output="screen",
+                emulate_tty=True,
             ),
             # TCP wireless ROS
             ExecuteProcess(

@@ -2,7 +2,7 @@
 """Teleoperation node: maps VR wrist poses to dual SO101 arms via IK.
 
 Subscribes to /right_wrist and /left_wrist (PoseStamped) from TCP listener and publishes
-joint commands to /right_arm/so101/cmd/set_positions and /left_arm/so101/cmd/set_positions
+joint commands to /right_arm/cmd/set_positions and /left_arm/cmd/set_positions
 (String/JSON) via the SO101 bridges.
 
 Uses incremental (frame-to-frame) delta control for each arm independently:
@@ -96,11 +96,11 @@ class SO101TeleopNode(Node):
         self.left_prev_wrist_pos: np.ndarray | None = None
 
         # --- Publishers ---
-        self.right_pub_cmd = self.create_publisher(String, "/right_arm/so101/cmd/set_positions", 10)
-        self.right_pub_cmd_raw = self.create_publisher(String, "/right_arm/so101/cmd/set_positions_raw", 10)
+        self.right_pub_cmd = self.create_publisher(String, "/right_arm/cmd/set_positions", 10)
+        self.right_pub_cmd_raw = self.create_publisher(String, "/right_arm/cmd/set_positions_raw", 10)
         
-        self.left_pub_cmd = self.create_publisher(String, "/left_arm/so101/cmd/set_positions", 10)
-        self.left_pub_cmd_raw = self.create_publisher(String, "/left_arm/so101/cmd/set_positions_raw", 10)
+        self.left_pub_cmd = self.create_publisher(String, "/left_arm/cmd/set_positions", 10)
+        self.left_pub_cmd_raw = self.create_publisher(String, "/left_arm/cmd/set_positions_raw", 10)
 
         # --- Subscribers ---
         self.create_subscription(
