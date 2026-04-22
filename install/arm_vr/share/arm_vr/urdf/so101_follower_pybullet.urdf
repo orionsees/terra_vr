@@ -1,0 +1,198 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!-- SO101 Arm URDF for PyBullet - Kinematics only, no meshes -->
+<robot name="so101_follower">
+
+  <!-- World Link -->
+  <link name="world"/>
+
+  <joint name="world_to_base" type="fixed">
+    <parent link="world"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Link base -->
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.147"/>
+      <inertia ixx="0.000136" ixy="0" ixz="0" iyy="0.000115" iyz="0" izz="0.00013"/>
+    </inertial>
+  </link>
+
+  <!-- Link shoulder -->
+  <link name="shoulder_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.100"/>
+      <inertia ixx="8.38e-05" ixy="0" ixz="0" iyy="8.10e-05" iyz="0" izz="2.40e-05"/>
+    </inertial>
+  </link>
+
+  <!-- Joint from base to shoulder -->
+  <joint name="shoulder_pan" type="revolute">
+    <origin xyz="0 -0.0452 0.0648" rpy="-3.14159 0 1.5708"/>
+    <parent link="base_link"/>
+    <child link="shoulder_link"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10" velocity="10" lower="-2.055" upper="2.058"/>
+  </joint>
+
+  <!-- Link upper_arm -->
+  <link name="upper_arm_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.103"/>
+      <inertia ixx="4.08e-05" ixy="0" ixz="0" iyy="0.000147" iyz="0" izz="0.000142"/>
+    </inertial>
+  </link>
+
+  <!-- Joint from shoulder to upper_arm -->
+  <joint name="shoulder_lift" type="revolute">
+    <origin xyz="-0.0304 -0.0183 -0.0542" rpy="-1.5708 -1.5708 0"/>
+    <parent link="shoulder_link"/>
+    <child link="upper_arm_link"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10" velocity="10" lower="-2.018" upper="2.018"/>
+  </joint>
+
+  <!-- Link lower_arm -->
+  <link name="lower_arm_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.104"/>
+      <inertia ixx="2.87e-05" ixy="0" ixz="0" iyy="0.000160" iyz="0" izz="0.000145"/>
+    </inertial>
+  </link>
+
+  <!-- Joint from upper_arm to lower_arm -->
+  <joint name="elbow_flex" type="revolute">
+    <origin xyz="-0.11257 -0.028 0" rpy="-1.23e-15 5.76e-16 1.5708"/>
+    <parent link="upper_arm_link"/>
+    <child link="lower_arm_link"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10" velocity="10" lower="-1.653" upper="1.654"/>
+  </joint>
+
+  <!-- Link wrist -->
+  <link name="wrist_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.079"/>
+      <inertia ixx="3.68e-05" ixy="0" ixz="0" iyy="2.54e-05" iyz="0" izz="2.10e-05"/>
+    </inertial>
+  </link>
+
+  <!-- Joint from lower_arm to wrist -->
+  <joint name="wrist_flex" type="revolute">
+    <origin xyz="-0.1349 0.0052 0" rpy="3.25e-15 2.86e-15 -1.5708"/>
+    <parent link="lower_arm_link"/>
+    <child link="wrist_link"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10" velocity="10" lower="-1.786" upper="1.790"/>
+  </joint>
+
+  <!-- Link gripper -->
+  <link name="gripper_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.087"/>
+      <inertia ixx="2.75e-05" ixy="0" ixz="0" iyy="4.34e-05" iyz="0" izz="3.45e-05"/>
+    </inertial>
+  </link>
+
+  <!-- Joint from wrist to gripper (wrist_roll) -->
+  <joint name="wrist_roll" type="revolute">
+    <origin xyz="0 -0.0611 0.0181" rpy="1.5708 -9.38e-08 3.14159"/>
+    <parent link="wrist_link"/>
+    <child link="gripper_link"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10" velocity="10" lower="-3.194" upper="4.120"/>
+  </joint>
+
+  <!-- Link jaw -->
+  <link name="jaw_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.012"/>
+      <inertia ixx="6.61e-06" ixy="0" ixz="0" iyy="1.89e-06" iyz="0" izz="5.29e-06"/>
+    </inertial>
+  </link>
+
+  <!-- Joint from gripper to jaw -->
+  <joint name="gripper" type="revolute">
+    <origin xyz="0.0202 0.0188 -0.0234" rpy="1.5708 -5.14e-17 -1.39e-14"/>
+    <parent link="gripper_link"/>
+    <child link="jaw_link"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10" velocity="10" lower="-0.174533" upper="1.74533"/>
+  </joint>
+
+  <!-- Transmissions -->
+  <transmission name="shoulder_pan_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="shoulder_pan">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="motor1">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="shoulder_lift_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="shoulder_lift">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="motor2">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="elbow_flex_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="elbow_flex">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="motor3">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="wrist_flex_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="wrist_flex">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="motor4">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="wrist_roll_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="wrist_roll">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="motor5">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="gripper_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="gripper">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="motor6">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+</robot>

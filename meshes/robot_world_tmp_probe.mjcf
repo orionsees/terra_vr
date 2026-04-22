@@ -1,0 +1,31 @@
+<mujoco model="diffdrive_swarm">
+  <option timestep="0.002" integrator="implicitfast" iterations="100" ls_iterations="30"
+          tolerance="1e-10" ls_tolerance="1e-10" />
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".1 .2 .3" rgb2=".2 .3 .4" />
+    <material name="ground_grid" texture="grid" texrepeat="4 4" texuniform="true" reflectance=".2" />
+    <model name="diffdrive_model" file="robot_model.xml" />
+  </asset>
+
+  <visual>
+    <map force="0.1" zfar="30" />
+    <rgba haze="0.15 0.25 0.35 1" />
+    <global offwidth="1920" offheight="1080" elevation="-20" azimuth="120" />
+  </visual>
+
+  <statistic center="0 0 0.25" />
+
+  <worldbody>
+    <geom name="floor" type="plane" pos="0 0 0" size="0 0 0.05" material="ground_grid" contype="1" conaffinity="3" condim="3" friction="1 0.02 0.01" />
+    <light name="spotlight" mode="targetbodycom" target="world" diffuse=".8 .8 .8" specular="0.3 0.3 0.3" pos="0 -3 3" cutoff="35" />
+    <light name="top" pos="0 0 3" mode="trackcom" />
+
+    <!-- Change count to control number of spawned robots. -->
+    <replicate count="4" euler="0 0 90" sep="_">
+      <frame pos="2.5 0 0">
+        <attach model="diffdrive_model" body="base_link" prefix="robot" />
+      </frame>
+    </replicate>
+  </worldbody>
+</mujoco>

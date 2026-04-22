@@ -1,0 +1,4 @@
+Invoking command in '/home/ubunt2/Documents/arm_vr/build/arm_vr': CMAKE_PREFIX_PATH=/opt/ros/humble CONDA_PROMPT_MODIFIER=(base) /usr/bin/cmake --build /home/ubunt2/Documents/arm_vr/build/arm_vr -- -j6 -l6
+Invoked command in '/home/ubunt2/Documents/arm_vr/build/arm_vr' returned '0': CMAKE_PREFIX_PATH=/opt/ros/humble CONDA_PROMPT_MODIFIER=(base) /usr/bin/cmake --build /home/ubunt2/Documents/arm_vr/build/arm_vr -- -j6 -l6
+Invoking command in '/home/ubunt2/Documents/arm_vr/build/arm_vr': CMAKE_PREFIX_PATH=/opt/ros/humble CONDA_PROMPT_MODIFIER=(base) /usr/bin/cmake --install /home/ubunt2/Documents/arm_vr/build/arm_vr
+Invoked command in '/home/ubunt2/Documents/arm_vr/build/arm_vr' returned '0': CMAKE_PREFIX_PATH=/opt/ros/humble CONDA_PROMPT_MODIFIER=(base) /usr/bin/cmake --install /home/ubunt2/Documents/arm_vr/build/arm_vr
