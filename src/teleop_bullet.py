@@ -250,6 +250,10 @@ class _ArmController:
         self._motor5_range_min = config["wrist_roll"]["range_min"]
         self._motor5_range_max = config["wrist_roll"]["range_max"]
 
+        # Wrist flex motor ID 4 config
+        self._motor4_range_min = config["wrist_flex"]["range_min"]
+        self._motor4_range_max = config["wrist_flex"]["range_max"]
+
         # Initialize IK solver
         self._ik = SO101IKSolver(urdf_path)
         self._target_arm: np.ndarray = self._ik.fk_ee_position()
@@ -318,10 +322,18 @@ class _ArmController:
         # Extract wrist yaw for motor ID 5 control
         r = R.from_quat(vr_quat)
         roll, pitch, yaw = r.as_euler('xyz', degrees=True)
+        
+        # Motor ID 5 (wrist_roll) — controlled by yaw
         normalized_yaw = (yaw + 180.0) / 360.0
         motor5_position = self._motor5_range_min + normalized_yaw * (self._motor5_range_max - self._motor5_range_min)
         motor5_position = max(self._motor5_range_min, min(self._motor5_range_max, motor5_position))
         motor5_position = int(motor5_position)
+
+        # Motor ID 4 (wrist_flex) — controlled by roll
+        normalized_roll = (roll + 180.0) / 360.0
+        motor4_position = self._motor4_range_min + normalized_roll * (self._motor4_range_max - self._motor4_range_min)
+        motor4_position = max(self._motor4_range_min, min(self._motor4_range_max, motor4_position))
+        motor4_position = int(motor4_position)
 
         # Latch reference on first message
         if self._ref_pos is None:
@@ -378,14 +390,15 @@ class _ArmController:
         out.data = json.dumps({k: round(v, 3) for k, v in joints.items()})
         self._pub.publish(out)
 
-        # Publish gripper servo position + wrist_roll separately via set_positions_raw
+        # Publish gripper servo position + wrist_roll + wrist_flex separately via set_positions_raw
         raw_cmd = {
             str(self._gripper_motor_id): self._gripper_servo_pos,
+            "4": motor4_position,
             "5": motor5_position
         }
-        motor5_cmd = String()
-        motor5_cmd.data = json.dumps(raw_cmd)
-        self._pub_raw.publish(motor5_cmd)
+        raw_servo_cmd = String()
+        raw_servo_cmd.data = json.dumps(raw_cmd)
+        self._pub_raw.publish(raw_servo_cmd)
 
     def close(self) -> None:
         self._ik.close()
