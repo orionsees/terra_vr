@@ -1,8 +1,0 @@
-source;share/arm_vr/hook/cmake_prefix_path.ps1
-source;share/arm_vr/hook/cmake_prefix_path.dsv
-source;share/arm_vr/hook/cmake_prefix_path.sh
-source;share/arm_vr/local_setup.bash
-source;share/arm_vr/local_setup.dsv
-source;share/arm_vr/local_setup.ps1
-source;share/arm_vr/local_setup.sh
-source;share/arm_vr/local_setup.zsh

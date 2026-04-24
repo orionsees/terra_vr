@@ -70,8 +70,8 @@ JOINT_LIMITS_DEG = {
     "gripper":       (math.degrees(-0.175), math.degrees( 1.745)),  # -10°…+100°
 }
 
-# Joints solved by IK  (gripper is pass-through from VR trigger)
-IK_JOINT_NAMES = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]
+# Joints solved by IK  (wrist_flex/roll and gripper are driven by raw servo commands)
+IK_JOINT_NAMES = ["shoulder_pan", "shoulder_lift", "elbow_flex"]
 
 # End-effector link for IK — gripper_link is the physical tip in the URDF
 EE_LINK_NAME = "gripper_link"
@@ -233,12 +233,11 @@ class SO101IKSolver:
 class _ArmController:
     """Manages IK and teleoperation for one arm."""
 
-    def __init__(self, side: str, node: Node, config: dict, urdf_path: str, scale: float, max_delta: float, ctrl_orient: bool):
+    def __init__(self, side: str, node: Node, config: dict, urdf_path: str, scale: float, max_delta: float):
         self.side = side
         self.node = node
         self._scale = scale
         self._max_delta = max_delta
-        self._ctrl_orient = ctrl_orient
 
         # Load gripper configs
         gripper_config = config["gripper"]
@@ -256,12 +255,12 @@ class _ArmController:
 
         # Initialize IK solver
         self._ik = SO101IKSolver(urdf_path)
-        self._target_arm: np.ndarray = self._ik.fk_ee_position()
-        node.get_logger().info(f"[{side}] IK solver ready, EE: {np.round(self._target_arm, 4)} m")
+        # FK position at all-zero joint angles — the arm's starting pose
+        self._fk_zero_pos: np.ndarray = self._ik.fk_ee_position()
+        node.get_logger().info(f"[{side}] IK solver ready, EE zero: {np.round(self._fk_zero_pos, 4)} m")
 
-        # VR reference pose
+        # VR reference pose latched on first message, never updated
         self._ref_pos: Optional[np.ndarray] = None
-        self._ref_quat: Optional[np.ndarray] = None
 
         # Gripper state
         self._gripper_deg: float = 0.0
@@ -281,11 +280,17 @@ class _ArmController:
         out.data = json.dumps(joints)
         self._pub.publish(out)
         
-        # Send gripper to center position (neutral)
-        gripper_cmd = String()
-        gripper_cmd.data = json.dumps({str(self._gripper_motor_id): self._gripper_servo_pos})
-        self._pub_raw.publish(gripper_cmd)
-        
+        # Send gripper + wrist joints to neutral raw positions
+        mid4 = int((self._motor4_range_min + self._motor4_range_max) / 2)
+        mid5 = int((self._motor5_range_min + self._motor5_range_max) / 2)
+        raw_cmd = String()
+        raw_cmd.data = json.dumps({
+            str(self._gripper_motor_id): self._gripper_servo_pos,
+            "4": mid4,
+            "5": mid5,
+        })
+        self._pub_raw.publish(raw_cmd)
+
         self.node.get_logger().info(f"[{self.side}] Sent initial zero position")
 
     def on_gripper(self, msg: Float32) -> None:
@@ -335,70 +340,48 @@ class _ArmController:
         motor4_position = max(self._motor4_range_min, min(self._motor4_range_max, motor4_position))
         motor4_position = int(motor4_position)
 
-        # Latch reference on first message
+        # Latch reference on first message — this VR pose corresponds to arm zero-angle state
         if self._ref_pos is None:
             self._ref_pos = vr_pos.copy()
-            self._ref_quat = vr_quat.copy()
             self.node.get_logger().info(f"[{self.side}] Reference pose latched")
-            return
 
-        # Scaled displacement in VR frame
+        # Absolute displacement from the fixed reference VR pose, scaled
         delta_vr = (vr_pos - self._ref_pos) * self._scale
 
-        if np.linalg.norm(delta_vr) < 1e-6:
-            return
-
-        # Remap to arm frame
-        delta_arm = np.array([
-            -delta_vr[0],
-            -delta_vr[2],
-            delta_vr[1],
-        ])
-
-        # Safety clamp
-        norm = np.linalg.norm(delta_arm)
-        if norm > self._max_delta:
-            delta_arm *= self._max_delta / norm
-
-        # Advance target
-        new_target = self._target_arm + delta_arm
-
-        # Optional orientation
-        target_orn: Optional[list[float]] = None
-        if self._ctrl_orient:
-            r_ref = R.from_quat(self._ref_quat)
-            r_cur = R.from_quat(vr_quat)
-            r_rel = r_cur * r_ref.inv()
-            remap = np.array([[-1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=float)
-            r_arm = R.from_matrix(remap @ r_rel.as_matrix() @ remap.T)
-            target_orn = r_arm.as_quat().tolist()
-
-        # Solve IK
-        try:
-            joints = self._ik.solve(new_target.tolist(), target_orn=target_orn)
-        except Exception as exc:
-            self.node.get_logger().error(f"[{self.side}] IK failed: {exc}")
-            return
-
-        # Commit state
-        self._target_arm = new_target
-        self._ref_pos = vr_pos.copy()
-        self._ref_quat = vr_quat.copy()
-
-        # Publish IK command (without gripper)
-        out = String()
-        out.data = json.dumps({k: round(v, 3) for k, v in joints.items()})
-        self._pub.publish(out)
-
-        # Publish gripper servo position + wrist_roll + wrist_flex separately via set_positions_raw
+        # Always publish raw servo commands (wrist + gripper) on every frame
         raw_cmd = {
             str(self._gripper_motor_id): self._gripper_servo_pos,
             "4": motor4_position,
-            "5": motor5_position
+            "5": motor5_position,
         }
         raw_servo_cmd = String()
         raw_servo_cmd.data = json.dumps(raw_cmd)
         self._pub_raw.publish(raw_servo_cmd)
+
+        if np.linalg.norm(delta_vr) < 1e-6:
+            return
+
+        # Remap VR displacement to arm frame
+        delta_arm = np.array([
+            -delta_vr[0],
+            -delta_vr[2],
+             delta_vr[1],
+        ])
+
+        # Absolute IK target = FK zero-angle EE position + displacement from reference
+        new_target = self._fk_zero_pos + delta_arm
+
+        # Solve IK (position only — wrist orientation handled by raw servo commands)
+        try:
+            joints = self._ik.solve(new_target.tolist())
+        except Exception as exc:
+            self.node.get_logger().error(f"[{self.side}] IK failed: {exc}")
+            return
+
+        # Publish IK command (shoulder_pan, shoulder_lift, elbow_flex)
+        out = String()
+        out.data = json.dumps({k: round(v, 3) for k, v in joints.items()})
+        self._pub.publish(out)
 
     def close(self) -> None:
         self._ik.close()
@@ -425,15 +408,13 @@ class VRTeleopNode(Node):
         super().__init__("so101_vr_teleop")
 
         # ---- ROS parameters ----
-        self.declare_parameter("urdf_path",           args.urdf_path)
-        self.declare_parameter("scale",               args.scale)
-        self.declare_parameter("max_delta_m",         args.max_delta_m)
-        self.declare_parameter("control_orientation", args.control_orientation)
+        self.declare_parameter("urdf_path",   args.urdf_path)
+        self.declare_parameter("scale",         args.scale)
+        self.declare_parameter("max_delta_m",   args.max_delta_m)
 
-        urdf_path      = self.get_parameter("urdf_path").value
-        scale          = float(self.get_parameter("scale").value)
-        max_delta      = float(self.get_parameter("max_delta_m").value)
-        ctrl_orient    = bool(self.get_parameter("control_orientation").value)
+        urdf_path = self.get_parameter("urdf_path").value
+        scale     = float(self.get_parameter("scale").value)
+        max_delta = float(self.get_parameter("max_delta_m").value)
 
         # ---- Load configs for both arms ----
         package_share_dir = get_package_share_directory('arm_vr')
@@ -448,8 +429,8 @@ class VRTeleopNode(Node):
         self.get_logger().info(f"URDF: {urdf_path}")
 
         # ---- Create arm controllers ----
-        self.left_arm = _ArmController("left", self, left_config, urdf_path, scale, max_delta, ctrl_orient)
-        self.right_arm = _ArmController("right", self, right_config, urdf_path, scale, max_delta, ctrl_orient)
+        self.left_arm = _ArmController("left", self, left_config, urdf_path, scale, max_delta)
+        self.right_arm = _ArmController("right", self, right_config, urdf_path, scale, max_delta)
 
         # Send initial zero positions
         self.left_arm.send_zero_position()
@@ -465,7 +446,7 @@ class VRTeleopNode(Node):
         self.create_subscription(Float32, "/right_arm/vr/gripper", self._on_right_gripper, qos)
 
         self.get_logger().info(
-            f"Dual-arm teleop active | scale={scale}  max_step={max_delta} m  orient={ctrl_orient}"
+            f"Dual-arm teleop active | scale={scale}  max_step={max_delta} m"
         )
 
     # ------ Left arm callbacks ------
@@ -503,10 +484,8 @@ def main():
     parser.add_argument("--urdf-path", default="",
                         help="Path to so101_follower.urdf  "
                              "(default: resolved from arm_vr ament share)")
-    parser.add_argument("--scale",               type=float, default=1.0)
-    parser.add_argument("--max-delta-m",         type=float, default=DEFAULT_MAX_DELTA_M)
-    parser.add_argument("--control-orientation", action="store_true",
-                        help="Also send wrist orientation to IK (tune position first)")
+    parser.add_argument("--scale",       type=float, default=1.0)
+    parser.add_argument("--max-delta-m", type=float, default=DEFAULT_MAX_DELTA_M)
 
     ros_args = rclpy.utilities.remove_ros_args(sys.argv[1:])
     args = parser.parse_args(ros_args)

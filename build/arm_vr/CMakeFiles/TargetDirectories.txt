@@ -1,9 +1,0 @@
-/home/ubunt2/Documents/arm_vr/build/arm_vr/CMakeFiles/uninstall.dir
-/home/ubunt2/Documents/arm_vr/build/arm_vr/CMakeFiles/arm_vr_uninstall.dir
-/home/ubunt2/Documents/arm_vr/build/arm_vr/CMakeFiles/test.dir
-/home/ubunt2/Documents/arm_vr/build/arm_vr/CMakeFiles/edit_cache.dir
-/home/ubunt2/Documents/arm_vr/build/arm_vr/CMakeFiles/rebuild_cache.dir
-/home/ubunt2/Documents/arm_vr/build/arm_vr/CMakeFiles/list_install_components.dir
-/home/ubunt2/Documents/arm_vr/build/arm_vr/CMakeFiles/install.dir
-/home/ubunt2/Documents/arm_vr/build/arm_vr/CMakeFiles/install/local.dir
-/home/ubunt2/Documents/arm_vr/build/arm_vr/CMakeFiles/install/strip.dir
