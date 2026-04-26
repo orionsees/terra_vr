@@ -43,12 +43,6 @@ install(
   RENAME so101_bridge
 )
 
-install(
-  PROGRAMS
-    src/teleoperation.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME teleoperation
-)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
