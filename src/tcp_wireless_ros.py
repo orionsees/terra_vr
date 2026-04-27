@@ -7,8 +7,8 @@ Publishes to ROS2 topics:
     /left_wrist                (geometry_msgs/PoseStamped)
     /right_wrist               (geometry_msgs/PoseStamped)
     /head_pose                 (geometry_msgs/PoseStamped)
-    /left_hand/<joint>         (geometry_msgs/PointStamped)  × 21 joints
-    /right_hand/<joint>        (geometry_msgs/PointStamped)  × 21 joints
+    /left_hand/<joint>         (geometry_msgs/PointStamped)  x 21 joints
+    /right_hand/<joint>        (geometry_msgs/PointStamped)  x 21 joints
     /left_hand/pinch_distance  (std_msgs/Float32)
     /right_hand/pinch_distance (std_msgs/Float32)
 

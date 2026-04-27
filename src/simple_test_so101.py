@@ -11,7 +11,7 @@ sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from so101 import SO101Arm
 
 PORT = "/dev/ttyACM0"
-CAL  = "/home/ubunt2/Documents/arm_vr/config/right_arm.json"
+CAL  = "/home/ubunt2/ros_ws/src/arm_vr/config/right_arm.json"
 
 with SO101Arm(PORT, calibration_file=CAL) as arm:
 
@@ -25,11 +25,12 @@ with SO101Arm(PORT, calibration_file=CAL) as arm:
     print("loads          :", arm.read_loads_raw([1, 2, 3, 4, 5, 6]))
 
     # --- write by joint name (degrees, needs calibration) ---
-    arm.set_position("shoulder_pan",  -90.0, acc=10, speed=100)
+    arm.set_position("shoulder_lift",  90, acc=10, speed=100)
+    arm.set_position("elbow_flex",  -90, acc=10, speed=100)
     # arm.set_positions({"elbow_flex": -20.0, "wrist_flex": 10.0}, acc=10, speed=100)
 
     # --- write by servo ID (raw encoder ticks 0-4095, mid=2048) ---
-    # arm.set_position_raw(1, 2048, acc=10, speed=100)
+    # arm.set_position_raw(3, 3069, acc=10, speed=100)
     # arm.set_positions_raw({1: 2048, 2: 2048, 3: 2048}, acc=10, speed=100, settle_seconds=1.0)
 
     # --- joint name → servo ID mapping ---
