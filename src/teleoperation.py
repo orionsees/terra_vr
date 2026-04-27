@@ -21,27 +21,25 @@ CAL  = "/home/ubunt2/ros_ws/src/arm_vr/config/right_arm.json"
 with open(CAL) as f:
     JOINTS = json.load(f)
 
-# Twist range (degrees) that maps to wrist_roll [range_min, range_max]
-# Twist = Z-axis component of swing-twist quaternion decomposition
-WRIST_ROLL_YAW_MIN = -170.0   # twist angle at range_min
-WRIST_ROLL_YAW_MAX =  170.0   # twist angle at range_max
+# Yaw range (degrees) that maps to wrist_roll [range_min, range_max]
+WRIST_ROLL_YAW_MIN = -170.0   # yaw at range_min
+WRIST_ROLL_YAW_MAX =  170.0   # yaw at range_max
 
-# Flex range (degrees) that maps to wrist_flex [range_min, range_max]
-# Flex = X-component of swing quaternion (Z-twist removed)
-WRIST_FLEX_ROLL_MIN = -65.0   # flex angle at range_min
-WRIST_FLEX_ROLL_MAX =  50.0   # flex angle at range_max
+# Roll range (degrees) that maps to wrist_flex [range_min, range_max]
+WRIST_FLEX_ROLL_MIN = -65.0   # roll at range_min
+WRIST_FLEX_ROLL_MAX =  50.0   # roll at range_max
 
 # Spike rejection: maximum allowed change per callback (degrees / cm)
 # Increase if legitimate fast motion is rejected; decrease to filter more
 SPIKE_THRESHOLD_YAW   = 15.0  # degrees — wrist_roll
 SPIKE_THRESHOLD_ROLL  = 15.0  # degrees — wrist_flex
-SPIKE_THRESHOLD_PINCH =  2.0  # cm      — gripper
+SPIKE_THRESHOLD_PINCH =  5.0  # cm      — gripper
 
 # Deadband: minimum servo tick change required to send a new command
 # Suppresses jitter when wrist is held still (1 tick ≈ 0.088°)
 DEADBAND_WRIST_ROLL  = 20   # ticks
 DEADBAND_WRIST_FLEX  = 20   # ticks
-DEADBAND_GRIPPER     = 3   # ticks
+DEADBAND_GRIPPER     = 5   # ticks
 
 def quaternion_to_rpy(x, y, z, w):
     """Convert quaternion to roll, pitch, yaw (radians)."""
@@ -82,32 +80,19 @@ class RightWristSubscriber(Node):
         p = msg.pose.position
         q = msg.pose.orientation
         roll, pitch, yaw = quaternion_to_rpy(q.x, q.y, q.z, q.w)
+        yaw_deg = math.degrees(yaw)
 
         print(
             f"XYZ: ({p.x:.4f}, {p.y:.4f}, {p.z:.4f}) | "
-            f"RPY: ({math.degrees(roll):.2f}°, {math.degrees(pitch):.2f}°, {math.degrees(yaw):.2f}°)"
+            f"RPY: ({math.degrees(roll):.2f}°, {math.degrees(pitch):.2f}°, {yaw_deg:.2f}°)"
         )
 
-        # Swing-twist decomposition around the Z-axis:
-        #   twist angle  = rotation around Z            → wrist_roll
-        #   swing X-angle = remaining flex after Z-twist → wrist_flex
-        # This avoids Euler gimbal lock and requires no yaw-dependent blending.
-        norm_tz = math.hypot(q.z, q.w)
-        if norm_tz > 1e-9:
-            twist_deg = math.degrees(2.0 * math.atan2(q.z, q.w))
-            sx = (q.x * q.w - q.y * q.z) / norm_tz
-            sw = norm_tz
-            flex_deg = math.degrees(2.0 * math.atan2(sx, sw))
-        else:
-            twist_deg = 0.0
-            flex_deg = 0.0
-
-        # Map twist_deg [WRIST_ROLL_YAW_MIN, WRIST_ROLL_YAW_MAX] → wrist_roll [range_min, range_max]
+        # Map yaw [WRIST_ROLL_YAW_MIN, WRIST_ROLL_YAW_MAX] → wrist_roll [range_min, range_max]
         # Ignore values outside the defined range — motor holds last position
-        if WRIST_ROLL_YAW_MIN <= twist_deg <= WRIST_ROLL_YAW_MAX:
-            if self._last_yaw is None or abs(twist_deg - self._last_yaw) <= SPIKE_THRESHOLD_YAW:
-                self._last_yaw = twist_deg
-                fraction = (twist_deg - WRIST_ROLL_YAW_MIN) / (WRIST_ROLL_YAW_MAX - WRIST_ROLL_YAW_MIN)
+        if WRIST_ROLL_YAW_MIN <= yaw_deg <= WRIST_ROLL_YAW_MAX:
+            if self._last_yaw is None or abs(yaw_deg - self._last_yaw) <= SPIKE_THRESHOLD_YAW:
+                self._last_yaw = yaw_deg
+                fraction = (yaw_deg - WRIST_ROLL_YAW_MIN) / (WRIST_ROLL_YAW_MAX - WRIST_ROLL_YAW_MIN)
                 wrist_roll_pos = int(
                     JOINTS["wrist_roll"]["range_min"] + fraction * (JOINTS["wrist_roll"]["range_max"] - JOINTS["wrist_roll"]["range_min"])
                 )
@@ -115,13 +100,21 @@ class RightWristSubscriber(Node):
                     self._sent_wrist_roll = wrist_roll_pos
                     self._arm.set_positions_raw({5: wrist_roll_pos}, acc=254, speed=0, expect_ack=False)
             else:
-                self.get_logger().warn(f"Twist spike rejected: {self._last_yaw:.1f}° → {twist_deg:.1f}°")
+                self.get_logger().warn(f"Yaw spike rejected: {self._last_yaw:.1f}° → {yaw_deg:.1f}°")
 
-        # Map flex_deg [WRIST_FLEX_ROLL_MIN, WRIST_FLEX_ROLL_MAX] → wrist_flex [range_min, range_max]
-        if WRIST_FLEX_ROLL_MIN <= flex_deg <= WRIST_FLEX_ROLL_MAX:
-            if self._last_roll is None or abs(flex_deg - self._last_roll) <= SPIKE_THRESHOLD_ROLL:
-                self._last_roll = flex_deg
-                fraction = (flex_deg - WRIST_FLEX_ROLL_MIN) / (WRIST_FLEX_ROLL_MAX - WRIST_FLEX_ROLL_MIN)
+        # Map roll [WRIST_FLEX_ROLL_MIN, WRIST_FLEX_ROLL_MAX] → wrist_flex [range_min, range_max]
+        # When wrist_roll rotates, the flex axis rotates with it — blend roll and pitch accordingly:
+        #   theta=0°  → pure roll (wrist upright)
+        #   theta=-90° → pure pitch (wrist rotated -90°)
+        roll_deg  = math.degrees(roll)
+        pitch_deg = math.degrees(pitch)
+        theta = math.radians(self._last_yaw if self._last_yaw is not None else 0.0)
+        effective_flex = roll_deg * math.cos(theta) - pitch_deg * math.sin(theta)
+
+        if WRIST_FLEX_ROLL_MIN <= effective_flex <= WRIST_FLEX_ROLL_MAX:
+            if self._last_roll is None or abs(effective_flex - self._last_roll) <= SPIKE_THRESHOLD_ROLL:
+                self._last_roll = effective_flex
+                fraction = (effective_flex - WRIST_FLEX_ROLL_MIN) / (WRIST_FLEX_ROLL_MAX - WRIST_FLEX_ROLL_MIN)
                 wrist_flex_pos = int(
                     JOINTS["wrist_flex"]["range_min"] + fraction * (JOINTS["wrist_flex"]["range_max"] - JOINTS["wrist_flex"]["range_min"])
                 )
@@ -129,7 +122,7 @@ class RightWristSubscriber(Node):
                     self._sent_wrist_flex = wrist_flex_pos
                     self._arm.set_positions_raw({4: wrist_flex_pos}, acc=254, speed=0, expect_ack=False)
             else:
-                self.get_logger().warn(f"Flex spike rejected: {self._last_roll:.1f}° → {flex_deg:.1f}°")
+                self.get_logger().warn(f"Flex spike rejected: {self._last_roll:.1f}° → {effective_flex:.1f}°")
 
     def right_hand_pinch_callback(self, msg: Float32):
         pinch_distance = msg.data

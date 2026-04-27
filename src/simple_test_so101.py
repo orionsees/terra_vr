@@ -25,8 +25,7 @@ with SO101Arm(PORT, calibration_file=CAL) as arm:
     print("loads          :", arm.read_loads_raw([1, 2, 3, 4, 5, 6]))
 
     # --- write by joint name (degrees, needs calibration) ---
-    arm.set_position("shoulder_lift",  90, acc=10, speed=100)
-    arm.set_position("elbow_flex",  -90, acc=10, speed=100)
+    arm.set_position("shoulder_pan",  90, acc=10, speed=100)
     # arm.set_positions({"elbow_flex": -20.0, "wrist_flex": 10.0}, acc=10, speed=100)
 
     # --- write by servo ID (raw encoder ticks 0-4095, mid=2048) ---

@@ -85,8 +85,12 @@ DEADBAND_GRIPPER     =  3   # ticks
 
 # Deadband: min wrist position displacement (metres) required to move the
 # 2-DOF arm sliders.  Eliminates jitter from small hand tremor / tracking noise.
-DEADBAND_WRIST_X = 0.01   # m  (5 mm)
-DEADBAND_WRIST_Y = 0.01   # m  (5 mm)
+DEADBAND_WRIST_X = 0.008   # m  (5 mm)
+DEADBAND_WRIST_Y = 0.008   # m  (5 mm)
+
+# Scale factor: degrees of shoulder_pan per metre of wrist X displacement
+# 0.45 m swing ≈ 90°  →  200 deg/m
+PAN_WRIST_SCALE = 300.0   # deg/m
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +228,7 @@ def run_visualization(
     margin = reach * 0.18
 
     fig, ax = plt.subplots(figsize=(7, 7))
-    plt.subplots_adjust(bottom=0.22)
+    plt.subplots_adjust(bottom=0.27)
 
     ax.set_xlim(-(reach + margin), reach + margin)
     ax.set_ylim(-(reach + margin), reach + margin)
@@ -294,15 +298,52 @@ def run_visualization(
 
     ax.legend(loc="upper right", fontsize=8)
 
+    # -----------------------------------------------------------------------
+    # Top-view inset  (shoulder pan)
+    # -----------------------------------------------------------------------
+    ax_top = ax.inset_axes([0.01, 0.60, 0.28, 0.36])
+    ax_top.set_aspect("equal")
+    ax_top.set_title("Top View\n(shoulder pan)", fontsize=7, pad=2)
+    ax_top.set_xlim(-1.45, 1.45)
+    ax_top.set_ylim(-0.38, 1.48)
+    ax_top.axis("off")
+    # Shaded reachable arc (±90°)
+    _pa = np.linspace(-math.pi / 2, math.pi / 2, 60)
+    _arc_xs = np.concatenate([[0.0], np.sin(_pa)])
+    _arc_ys = np.concatenate([[0.0], np.cos(_pa)])
+    ax_top.fill(_arc_xs, _arc_ys, color="lightcyan", alpha=0.4, zorder=0)
+    ax_top.plot(np.sin(_pa), np.cos(_pa), color="steelblue", linewidth=1.2, alpha=0.7)
+    # Tick marks at 0°, ±45°, ±90°
+    for _tdeg in [-90, -45, 0, 45, 90]:
+        _tr = math.radians(_tdeg)
+        _tx, _ty = math.sin(_tr), math.cos(_tr)
+        ax_top.plot([0.82 * _tx, _tx], [0.82 * _ty, _ty],
+                    color="steelblue", linewidth=1.0, alpha=0.8)
+        _lx = 1.25 * _tx if _tdeg != 0 else 0.0
+        _ly = 1.22 * _ty
+        ax_top.text(_lx, _ly, f"{_tdeg:+d}°",
+                    ha="center", va="center", fontsize=6, color="dimgray")
+    ax_top.text(0, 1.38, "fwd", ha="center", va="bottom", fontsize=6, color="gray")
+    ax_top.plot(0, 0, "o", color="steelblue", markersize=5, zorder=4)
+    # Live pan direction indicator
+    _pan_line, = ax_top.plot([0, 0], [0, 1.0], color="tomato", linewidth=3,
+                              solid_capstyle="round", zorder=5)
+    _pan_dot,  = ax_top.plot([0], [1.0], "o", color="tomato", markersize=7, zorder=6)
+    _pan_text  = ax_top.text(0, -0.24, "Pan:  0.0°", ha="center", va="top", fontsize=7,
+                              family="monospace",
+                              bbox=dict(boxstyle="round", facecolor="lightyellow", alpha=0.8))
+
     # Sliders
-    ax_sx = plt.axes([0.15, 0.10, 0.72, 0.03])
-    ax_sy = plt.axes([0.15, 0.05, 0.72, 0.03])
+    ax_span = plt.axes([0.15, 0.21, 0.72, 0.03])
+    ax_sx   = plt.axes([0.15, 0.14, 0.72, 0.03])
+    ax_sy   = plt.axes([0.15, 0.07, 0.72, 0.03])
     # Initial position = physical zero (L-shape): link1 along +Y, link2 along +X
     # In model space: theta1=+90deg, theta2=-90deg => EE at (L2, L1)
-    slider_x = Slider(ax_sx, "X (m)", -reach, reach,
-                      valinit=round(L2, 3), valstep=0.001)
-    slider_y = Slider(ax_sy, "Y (m)", -reach, reach,
-                      valinit=round(L1, 3), valstep=0.001)
+    slider_pan = Slider(ax_span, "Pan (°)", -90.0, 90.0, valinit=0.0, valstep=0.5)
+    slider_x   = Slider(ax_sx, "X (m)", -reach, reach,
+                        valinit=round(L2, 3), valstep=0.001)
+    slider_y   = Slider(ax_sy, "Y (m)", -reach, reach,
+                        valinit=round(L1, 3), valstep=0.001)
 
     def _arm_points(t1: float, t2: float):
         xj = L1 * math.cos(t1)
@@ -336,12 +377,12 @@ def run_visualization(
     _SMOOTH_DT  = 0.05    # s  — timer tick period (20 Hz)
 
     # Desired target: updated immediately on every slider move.
-    _desired = {"x": round(L2, 3), "y": round(L1, 3)}
+    _desired = {"x": round(L2, 3), "y": round(L1, 3), "pan": 0.0}
     # Smooth (commanded) EE position: advances toward _desired at MAX_EE_VEL
     # when out-of-reach, snaps instantly when reachable.
     _smooth  = {"x": round(L2, 3), "y": round(L1, 3)}
     # Last sent servo angles — used to suppress redundant HW/print calls.
-    _prev_cmd = {"j1": None, "j2": None}
+    _prev_cmd = {"j1": None, "j2": None, "pan": None}
 
     def _closest_reachable(x_t: float, y_t: float) -> Tuple[float, float]:
         """Return the nearest point inside the reachable annulus toward (x_t, y_t)."""
@@ -356,6 +397,11 @@ def run_visualization(
         _desired["x"] = slider_x.val
         _desired["y"] = slider_y.val
         target_pt.set_data([_desired["x"]], [_desired["y"]])
+        fig.canvas.draw_idle()
+
+    def update_pan(_):
+        """Pan slider callback: record desired pan angle."""
+        _desired["pan"] = slider_pan.val
         fig.canvas.draw_idle()
 
     def _tick():
@@ -423,15 +469,18 @@ def run_visualization(
         t1_d = math.degrees(t1)
         t2_d = math.degrees(t2)
         # Servo angles: servo_J1 = 90 - model_θ1,  servo_J2 = -model_θ2 - 90
-        servo_j1 = 90.0 - t1_d
-        servo_j2 = -t2_d - 90.0
+        servo_j1  = 90.0 - t1_d
+        servo_j2  = -t2_d - 90.0
+        servo_pan = _desired["pan"]
 
         # Only print / send to hardware when the commanded angles actually changed
         # (suppresses 20 Hz noise when the arm is stationary).
         changed = (
             _prev_cmd["j1"] is None
-            or abs(servo_j1 - _prev_cmd["j1"]) > 0.05
-            or abs(servo_j2 - _prev_cmd["j2"]) > 0.05
+            or abs(servo_j1  - _prev_cmd["j1"])  > 0.05
+            or abs(servo_j2  - _prev_cmd["j2"])  > 0.05
+            or _prev_cmd["pan"] is None
+            or abs(servo_pan - _prev_cmd["pan"]) > 0.1
         )
 
         if out_of_reach:
@@ -439,12 +488,14 @@ def run_visualization(
             if changed:
                 print(f"model  J1={t1_d:+7.2f}°  J2={t2_d:+7.2f}°  "
                       f"servo  J1={servo_j1:+7.2f}°  J2={servo_j2:+7.2f}°  "
+                      f"pan={servo_pan:+.1f}°  "
                       f"EE=({xe:+.4f}, {ye:+.4f}) m  "
-                      f"[SMOOTH→BOUNDARY  target ({x_des:+.4f}, {y_des:+.4f})]")
+                      f"[SMOOTH\u2192BOUNDARY  target ({x_des:+.4f}, {y_des:+.4f})]")
             if arm is not None and changed:
                 try:
                     arm.set_positions(
-                        {"shoulder_lift": servo_j1, "elbow_flex": servo_j2},
+                        {"shoulder_lift": servo_j1, "elbow_flex": servo_j2,
+                         "shoulder_pan": servo_pan},
                         expect_ack=False,
                     )
                     hw_status = "HW SMOOTH"
@@ -457,12 +508,14 @@ def run_visualization(
             if changed:
                 print(f"model  J1={t1_d:+7.2f}°  J2={t2_d:+7.2f}°  "
                       f"servo  J1={servo_j1:+7.2f}°  J2={servo_j2:+7.2f}°  "
+                      f"pan={servo_pan:+.1f}°  "
                       f"EE=({xe:+.4f}, {ye:+.4f}) m  "
                       f"target=({x_des:+.4f}, {y_des:+.4f}) m")
             if arm is not None and changed:
                 try:
                     arm.set_positions(
-                        {"shoulder_lift": servo_j1, "elbow_flex": servo_j2},
+                        {"shoulder_lift": servo_j1, "elbow_flex": servo_j2,
+                         "shoulder_pan": servo_pan},
                         expect_ack=False,
                     )
                     hw_status = "HW OK"
@@ -472,17 +525,25 @@ def run_visualization(
                 hw_status = "HW OK" if arm is not None else "(no HW)"
 
         if changed:
-            _prev_cmd["j1"] = servo_j1
-            _prev_cmd["j2"] = servo_j2
+            _prev_cmd["j1"]  = servo_j1
+            _prev_cmd["j2"]  = servo_j2
+            _prev_cmd["pan"] = servo_pan
+
+        # Update top-view pan indicator
+        _pan_rad = math.radians(servo_pan)
+        _pan_line.set_data([0, math.sin(_pan_rad)], [0, math.cos(_pan_rad)])
+        _pan_dot.set_data([math.sin(_pan_rad)], [math.cos(_pan_rad)])
+        _pan_text.set_text(f"Pan: {servo_pan:+.1f}\u00b0")
 
         status_text.set_text(
             f"{label}  {hw_status}\n"
             f"model  J1={t1_d:+7.2f}°   J2={t2_d:+7.2f}°\n"
             f"servo  J1={servo_j1:+7.2f}°   J2={servo_j2:+7.2f}°\n"
-            f"EE = ({xe:+.4f}, {ye:+.4f}) m"
+            f"pan={servo_pan:+.1f}°   EE=({xe:+.4f}, {ye:+.4f}) m"
         )
         fig.canvas.draw_idle()
 
+    slider_pan.on_changed(update_pan)
     slider_x.on_changed(update)
     slider_y.on_changed(update)
     _tick()  # initial draw
@@ -501,6 +562,7 @@ def run_visualization(
         else:
             # Shared accumulator: ROS thread writes, matplotlib timer drains
             _wrist_delta = {"dx": 0.0, "dy": 0.0}
+            _pan_shared  = {"deg": 0.0}   # absolute pan angle (degrees)
             _wrist_lock = threading.Lock()
 
             class _WristNode(_RosNode):
@@ -513,6 +575,9 @@ def run_visualization(
                     # Position-delta state (slider control)
                     self_node._prev_z: Optional[float] = None
                     self_node._prev_y: Optional[float] = None
+                    self_node._prev_x: Optional[float] = None
+                    # Pan reference (None until first message after ENTER)
+                    self_node._ref_wrist_x: Optional[float] = None
                     # Spike-rejection state
                     self_node._last_yaw: Optional[float] = None
                     self_node._last_roll: Optional[float] = None
@@ -536,35 +601,49 @@ def run_visualization(
                     # --- Position → X/Y slider (existing behaviour) ---
                     cur_z = msg.pose.position.z
                     cur_y = msg.pose.position.y
+                    cur_x = msg.pose.position.x
+
                     if self_node._prev_z is not None:
-                        dz = cur_z - self_node._prev_z  # wrist Z → arm X
-                        dy = cur_y - self_node._prev_y  # wrist Y → arm Y
-                        with _wrist_lock:
-                            _wrist_delta["dx"] += dz * wrist_scale
-                            _wrist_delta["dy"] += dy * wrist_scale
+                        dz      = cur_z - self_node._prev_z  # wrist Z → arm X
+                        dy      = cur_y - self_node._prev_y  # wrist Y → arm Y
+                        dx_pan  = cur_x - self_node._prev_x  # wrist X → pan
+                        # Suppress arm reach updates when X (pan) is the dominant
+                        # axis of motion — avoids arm drift during horizontal panning.
+                        pan_dominant = abs(dx_pan) > abs(dz) and abs(dx_pan) > abs(dy)
+                        if not pan_dominant:
+                            with _wrist_lock:
+                                _wrist_delta["dx"] += dz * wrist_scale
+                                _wrist_delta["dy"] += dy * wrist_scale
                     self_node._prev_z = cur_z
                     self_node._prev_y = cur_y
+                    self_node._prev_x = cur_x
+
+                    # --- Shoulder pan via wrist X position ---
+                    cur_x = msg.pose.position.x
+                    if self_node._ref_wrist_x is None:
+                        self_node._ref_wrist_x = cur_x
+                        print(f"Pan reference captured — wrist X = {cur_x:.4f} m")
+                    else:
+                        pan_deg = (cur_x - self_node._ref_wrist_x) * PAN_WRIST_SCALE
+                        pan_deg = max(-90.0, min(90.0, pan_deg))
+                        with _wrist_lock:
+                            _pan_shared["deg"] = pan_deg
 
                     # --- Orientation → wrist_roll / wrist_flex (teleoperation) ---
                     if arm is None or joints_cal is None:
                         return
                     q = msg.pose.orientation
-                    norm_tz = math.hypot(q.z, q.w)
-                    if norm_tz > 1e-9:
-                        twist_deg = math.degrees(2.0 * math.atan2(q.z, q.w))
-                        sx = (q.x * q.w - q.y * q.z) / norm_tz
-                        sw = norm_tz
-                        flex_deg = math.degrees(2.0 * math.atan2(sx, sw))
-                    else:
-                        twist_deg = 0.0
-                        flex_deg  = 0.0
+                    roll, pitch, yaw = quaternion_to_rpy(q.x, q.y, q.z, q.w)
+                    yaw_deg   = math.degrees(yaw)
+                    roll_deg  = math.degrees(roll)
+                    pitch_deg = math.degrees(pitch)
 
-                    # wrist_roll via Z-axis twist
-                    if WRIST_ROLL_YAW_MIN <= twist_deg <= WRIST_ROLL_YAW_MAX:
+                    # wrist_roll via yaw
+                    if WRIST_ROLL_YAW_MIN <= yaw_deg <= WRIST_ROLL_YAW_MAX:
                         if (self_node._last_yaw is None or
-                                abs(twist_deg - self_node._last_yaw) <= SPIKE_THRESHOLD_YAW):
-                            self_node._last_yaw = twist_deg
-                            frac = ((twist_deg - WRIST_ROLL_YAW_MIN) /
+                                abs(yaw_deg - self_node._last_yaw) <= SPIKE_THRESHOLD_YAW):
+                            self_node._last_yaw = yaw_deg
+                            frac = ((yaw_deg - WRIST_ROLL_YAW_MIN) /
                                     (WRIST_ROLL_YAW_MAX - WRIST_ROLL_YAW_MIN))
                             wrist_roll_pos = int(
                                 joints_cal["wrist_roll"]["range_min"] +
@@ -580,16 +659,21 @@ def run_visualization(
                                 )
                         else:
                             self_node.get_logger().warn(
-                                f"Twist spike rejected: "
-                                f"{self_node._last_yaw:.1f}\u00b0 \u2192 {twist_deg:.1f}\u00b0"
+                                f"Yaw spike rejected: "
+                                f"{self_node._last_yaw:.1f}\u00b0 \u2192 {yaw_deg:.1f}\u00b0"
                             )
 
-                    # wrist_flex via swing X-component
-                    if WRIST_FLEX_ROLL_MIN <= flex_deg <= WRIST_FLEX_ROLL_MAX:
+                    # wrist_flex via roll/pitch blended by current yaw
+                    # (when wrist_roll rotates, the flex axis rotates with it)
+                    theta = math.radians(
+                        self_node._last_yaw if self_node._last_yaw is not None else 0.0
+                    )
+                    effective_flex = roll_deg * math.cos(theta) - pitch_deg * math.sin(theta)
+                    if WRIST_FLEX_ROLL_MIN <= effective_flex <= WRIST_FLEX_ROLL_MAX:
                         if (self_node._last_roll is None or
-                                abs(flex_deg - self_node._last_roll) <= SPIKE_THRESHOLD_ROLL):
-                            self_node._last_roll = flex_deg
-                            frac = ((flex_deg - WRIST_FLEX_ROLL_MIN) /
+                                abs(effective_flex - self_node._last_roll) <= SPIKE_THRESHOLD_ROLL):
+                            self_node._last_roll = effective_flex
+                            frac = ((effective_flex - WRIST_FLEX_ROLL_MIN) /
                                     (WRIST_FLEX_ROLL_MAX - WRIST_FLEX_ROLL_MIN))
                             wrist_flex_pos = int(
                                 joints_cal["wrist_flex"]["range_min"] +
@@ -606,7 +690,7 @@ def run_visualization(
                         else:
                             self_node.get_logger().warn(
                                 f"Flex spike rejected: "
-                                f"{self_node._last_roll:.1f}\u00b0 \u2192 {flex_deg:.1f}\u00b0"
+                                f"{self_node._last_roll:.1f}\u00b0 \u2192 {effective_flex:.1f}\u00b0"
                             )
 
                 def _pinch_cb(self_node, msg: Float32):
@@ -636,6 +720,10 @@ def run_visualization(
                             {6: gripper_pos}, acc=254, speed=0, expect_ack=False
                         )
 
+            input(
+                "\nPosition your arm so that shoulder_pan is at 0° (centre), "
+                "then press ENTER..."
+            )
             rclpy.init()
             _wrist_node = _WristNode()
 
@@ -672,7 +760,10 @@ def run_visualization(
                         _wrist_delta["dx"] = 0.0
                     if apply_y:
                         _wrist_delta["dy"] = 0.0
-                if not apply_x and not apply_y:
+                    new_pan_deg = _pan_shared["deg"]
+                # Pan: apply if change exceeds 0.5° threshold
+                apply_pan = abs(new_pan_deg - slider_pan.val) >= 0.5
+                if not apply_x and not apply_y and not apply_pan:
                     return
                 new_x = slider_x.val + (dx if apply_x else 0.0)
                 new_y = slider_y.val + (dy if apply_y else 0.0)
@@ -683,6 +774,8 @@ def run_visualization(
                     slider_x.set_val(round(new_x, 3))
                 if apply_y:
                     slider_y.set_val(round(new_y, 3))
+                if apply_pan:
+                    slider_pan.set_val(round(new_pan_deg, 1))
 
             _timer = fig.canvas.new_timer(interval=50)  # 20 Hz poll
             _timer.add_callback(_apply_wrist_delta)
