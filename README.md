@@ -15,6 +15,11 @@ ros2 launch arm_vr so101_bridge.launch.py \
   host:=0.0.0.0
 ```
 
+```bash
+python3 fk_ik_2dof_dual.py --viz --ros \
+  --port-right /dev/ttyACM0 --port-left /dev/ttyACM1
+```
+
 ## Configuration
 
 The launch file supports the following parameters:
