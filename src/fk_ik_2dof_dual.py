@@ -80,7 +80,7 @@ WRIST_FLEX_ROLL_MAX  =   50.0
 
 SPIKE_THRESHOLD_YAW   = 15.0   # degrees — wrist_roll
 SPIKE_THRESHOLD_ROLL  = 15.0   # degrees — wrist_flex
-SPIKE_THRESHOLD_PINCH =  2.0   # cm      — gripper
+SPIKE_THRESHOLD_PINCH =  4.0   # cm      — gripper
 
 DEADBAND_WRIST_ROLL  = 20  # ticks
 DEADBAND_WRIST_FLEX  = 20  # ticks
@@ -840,10 +840,14 @@ def run_dual_visualization(
                             {6: gripper_pos}, acc=254, speed=0, expect_ack=False
                         )
 
-            input(
-                "\nPosition BOTH arms so that shoulder_pan is at 0° (centre), "
-                "then press ENTER..."
+            print(
+                "\nPosition BOTH arms so that shoulder_pan is at 0° (centre). "
+                "Starting in 10 seconds..."
             )
+            import time as _time
+            for _i in range(10, 0, -1):
+                print(f"  {_i}...", flush=True)
+                _time.sleep(1)
             rclpy.init()
             _dual_node = _DualWristNode()
 

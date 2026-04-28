@@ -16,7 +16,7 @@ ros2 launch arm_vr so101_bridge.launch.py \
 ```
 
 ```bash
-python3 fk_ik_2dof_dual.py --viz --ros \
+python fk_ik_2dof_dual.py --viz --ros \
   --port-right /dev/ttyACM0 --port-left /dev/ttyACM1
 ```
 
