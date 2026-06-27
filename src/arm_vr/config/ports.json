@@ -1,0 +1,5 @@
+{
+    "left_arm_port": "/dev/ttyACM0",
+    "right_arm_port": "/dev/ttyACM1",
+    "tcp_host": "192.168.123.100"
+}

@@ -1,0 +1,10 @@
+{
+    "left": {
+        "roll_min": -88.23,
+        "roll_max": 49.69
+    },
+    "right": {
+        "roll_min": -83.59,
+        "roll_max": 44.31
+    }
+}

@@ -1,0 +1,302 @@
+================================================================================
+  VR → SO101 Arm Teleoperation — Session Log
+  Project: /home/mack/ros2_ws/src/arm_vr/
+  User: sarthak.jain@e-yantra.org
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+SYSTEM OVERVIEW
+────────────────────────────────────────────────────────────────────────────────
+
+Goal: Control a dual SO-101 robotic arm using a VR headset.
+      VR wrist pose data → ROS2 → servo commands → physical arm motion.
+
+Stack:
+  - ROS2 Humble, Ubuntu, Python 3.10 (anaconda env: "handtracking")
+  - VR publishes: /left_wrist  /right_wrist  (geometry_msgs/PoseStamped)
+  - Arms subscribe: /left_arm/cmd/set_positions_raw  (std_msgs/String, JSON)
+                    /right_arm/cmd/set_positions_raw  (std_msgs/String, JSON)
+
+SO-101 Servo IDs:
+  1 = shoulder_pan
+  2 = shoulder_lift
+  3 = elbow_flex
+  4 = wrist_flex    ← controlled by VR wrist ROLL
+  5 = wrist_roll    ← controlled by VR wrist YAW
+  6 = gripper
+
+VR coordinate frame (from PoseStamped.pose.position):
+  X = lateral (left/right)
+  Y = up/down
+  Z = forward/backward
+
+Quaternion → RPY conversion (math.atan2 based):
+  roll  = tilt sideways  (palm-up ↔ palm-down)
+  pitch = tilt forward/back
+  yaw   = rotate like a doorknob
+
+Config files:
+  config/left_arm.json   — servo hardware tick ranges for left arm
+  config/right_arm.json  — servo hardware tick ranges for right arm
+  config/left_wrist.json   — wrist angle calibration (roll/yaw min/max) for left
+  config/right_wrist.json  — wrist angle calibration (roll/yaw min/max) for right
+  config/ports.json        — serial port config (untracked)
+
+left_arm.json servo ranges (wrist servos):
+  wrist_flex (id=4):  range_min=766,  range_max=3111
+  wrist_roll (id=5):  range_min=0,    range_max=4095
+
+right_arm.json servo ranges (wrist servos):
+  wrist_flex (id=4):  range_min=927,  range_max=3281
+  wrist_roll (id=5):  range_min=0,    range_max=4095
+
+
+────────────────────────────────────────────────────────────────────────────────
+SCRIPTS BUILT (in src/)
+────────────────────────────────────────────────────────────────────────────────
+
+1. wrist_tracker.py
+   ─────────────────
+   Purpose: Record wrist position + orientation data, then show a static
+            matplotlib plot when recording ends.
+   Usage:   python3 wrist_tracker.py [--duration 30] [--output out.csv]
+                                     [--no-plot] [--window 10]
+   Notes:
+   - Subscribes to /left_wrist and /right_wrist
+   - Records X/Y/Z position + Roll/Pitch/Yaw orientation
+   - Bug fixed: np.ptp() removed in NumPy 2.0 → replaced with
+     vals.max() - vals.min()
+
+2. wrist_live.py
+   ──────────────
+   Purpose: Real-time matplotlib dashboard showing wrist movement live.
+   Usage:   python3 wrist_live.py [--window 10] [--rate 20]
+   Layout:
+     Row 0: Status boxes (LEFT | info panel | RIGHT)
+     Row 1: X/Y/Z position time-series (scrolling)
+     Row 2: Roll/Pitch/Yaw orientation time-series (scrolling)
+   Features added (latest version):
+   - Activity detection: computes std dev of roll and yaw over the
+     visible window for each side
+   - The dominant orientation (roll OR yaw, whichever has higher std dev)
+     gets a bright green border + "▶ servo 4/5 ACTIVE" title
+   - Non-dominant orientation graph is dimmed (thin lines, faded)
+   - Status boxes show:
+       ► ROLL active  (σ 12.3° vs 2.1°)  → servo 4
+   - Dark theme: BG="#161616", PANEL="#1E1E1E"
+   - Orange = LEFT (#E67E22), Blue = RIGHT (#2980B9)
+   - Backend: TkAgg (Matplotlib FuncAnimation)
+   Bug fixed: AttributeError 'int' has no attribute 'set_xlim'
+     - Root cause: _update() iterated over proj_cfg (integer col indices)
+       instead of ori_axes (Axes objects)
+     - Fixed by using `for col, (ax, key) in enumerate(ori_axes):`
+
+3. wrist_servo.py   ← MAIN WRIST CONTROL SCRIPT
+   ────────────────
+   Purpose: Calibrate wrist roll/yaw ranges, then control servo 4 (roll)
+            and servo 5 (yaw) from VR wrist data — with activity-based
+            dominant servo selection (only ONE servo actuated at a time).
+   Usage:   python3 wrist_servo.py
+            python3 wrist_servo.py --recalibrate
+   Calibration:
+   - 4 captures per arm (roll min, roll max, yaw min, yaw max)
+   - Saved to config/left_wrist.json and config/right_wrist.json
+   - Merge-write pattern: never overwrites other scripts' keys
+   Control logic (WristServoNode._cb):
+   - Rolling buffer: deque(maxlen=30) per angle per side
+   - Activity = np.std() over the buffer
+   - dominant = "roll" if roll_std >= yaw_std else "yaw"
+   - Only the dominant servo gets a command that callback frame
+   - Logs when dominance switches:
+       [LEFT] dominant → ROLL (σ roll=12.3°  yaw=2.1°) → servo 4
+   Stability filters:
+   - SPIKE_THRESHOLD = 20° — rejects single-frame jumps
+   - DEADBAND = 15 ticks — skips command if change is too small
+   - ACTIVITY_WINDOW = 30 samples for std dev window
+
+4. roll_servo4.py   (superseded by wrist_servo.py, kept for reference)
+   ────────────────
+   Maps VR wrist ROLL → servo 4 (wrist_flex) only.
+   Saves roll_min/roll_max to config/left_wrist.json + right_wrist.json.
+
+5. yaw_servo5.py   (superseded by wrist_servo.py, kept for reference)
+   ───────────────
+   Maps VR wrist YAW → servo 5 (wrist_roll) only.
+   Saves yaw_min/yaw_max to config/left_wrist.json + right_wrist.json.
+
+6. so101.py
+   ─────────
+   Core SO-101 arm driver (pre-existing). Handles serial comms.
+
+7. so101_bridge_left.py / so101_bridge_right.py
+   ──────────────────────────────────────────────
+   ROS2 bridge nodes that subscribe to /left_arm/cmd/set_positions_raw
+   and /right_arm/cmd/set_positions_raw and forward commands to so101.py.
+
+8. fk_ik_2dof_dual.py
+   ────────────────────
+   Planar 2-DOF inverse kinematics (cosine rule) for shoulder_lift +
+   elbow_flex. Maps VR wrist position → shoulder/elbow joint angles.
+   VR Z → arm reach (fwd/back), VR Y → arm height.
+
+9. calibrate_arm.py
+   ──────────────────
+   Interactive arm calibration utility (pre-existing).
+   Uses select.select + ANSI cursor-up for live terminal display —
+   same pattern reused in wrist_servo.py calibration.
+
+10. setup_and_launch.py
+    ────────────────────
+    Launch helper (pre-existing).
+
+11. teleop_bridge_node.py
+    ──────────────────────
+    Teleoperation bridge (pre-existing / in-progress).
+
+
+────────────────────────────────────────────────────────────────────────────────
+KEY IMPLEMENTATION DETAILS
+────────────────────────────────────────────────────────────────────────────────
+
+Angle-to-tick mapping (linear interpolation, clamped):
+  frac = clamp((angle - a_min) / (a_max - a_min), 0, 1)
+  tick = int(t_min + frac * (t_max - t_min))
+
+JSON command format sent to arm:
+  {"4": 1800}           ← only servo 4 (when roll dominant)
+  {"5": 2500}           ← only servo 5 (when yaw dominant)
+  {"4": 1800, "5": 2500} ← both (old behavior before activity selection)
+
+QoS for wrist topics: BEST_EFFORT (VR streams use UDP-like delivery)
+QoS for arm command topics: RELIABLE
+
+Calibration file structure (left_wrist.json / right_wrist.json):
+  {
+      "roll_min": -45.0,
+      "roll_max":  45.0,
+      "yaw_min":  -60.0,
+      "yaw_max":   60.0
+  }
+
+Non-blocking Enter detection (used in calibration):
+  select.select([sys.stdin], [], [], 0)[0]  → True if Enter pressed
+
+Live terminal update (cursor-up trick):
+  print(f"\033[{n}A", end="", flush=True)  → move cursor up n lines
+  Then overwrite the line with new value → creates live-updating display
+
+
+────────────────────────────────────────────────────────────────────────────────
+DECISIONS & RATIONALE
+────────────────────────────────────────────────────────────────────────────────
+
+Q: Why activity-based servo selection (only one at a time)?
+A: VR roll and yaw change simultaneously during natural wrist movement.
+   Driving both servos at once causes the arm to fight itself. By picking
+   the more-active axis, the arm responds to intentional gestures only.
+
+Q: Why std dev (not peak-to-peak or raw value)?
+A: Std dev measures how much a signal is moving relative to itself, not
+   its absolute angle. This avoids false triggering from a steady offset
+   (e.g. wrist always held slightly rolled) while responding to actual
+   movement well.
+
+Q: Why ACTIVITY_WINDOW=30 samples?
+A: At ~60-120 Hz VR streams, 30 samples ≈ 0.25-0.5 seconds. Long enough
+   to avoid noise-driven switching, short enough to respond quickly when
+   the user changes their wrist gesture.
+
+Q: Why merge-write for config JSON files?
+A: roll_servo4.py, yaw_servo5.py, and wrist_servo.py all share the same
+   left_wrist.json / right_wrist.json files. Merge-write ensures that
+   saving roll calibration doesn't wipe out saved yaw calibration and
+   vice versa.
+
+Q: Why separate left_wrist.json and right_wrist.json instead of one file?
+A: Each wrist has an independent calibrated range. Keeping them separate
+   makes it easy to recalibrate one arm without touching the other.
+
+
+────────────────────────────────────────────────────────────────────────────────
+HOW TO RUN
+────────────────────────────────────────────────────────────────────────────────
+
+Activate environment first:
+  conda activate handtracking
+
+Start ROS2 arm bridges (in separate terminals):
+  ros2 launch arm_vr so101_bridge.launch.py
+
+Visualize wrist data live:
+  python3 src/wrist_live.py
+
+Control wrist servos (first run → calibration, then control):
+  python3 src/wrist_servo.py
+
+Force recalibration:
+  python3 src/wrist_servo.py --recalibrate
+
+Record a wrist movement session:
+  python3 src/wrist_tracker.py --duration 30
+
+
+────────────────────────────────────────────────────────────────────────────────
+BUGS FIXED DURING SESSION
+────────────────────────────────────────────────────────────────────────────────
+
+1. NumPy 2.0 removed ndarray.ptp()
+   File: wrist_tracker.py
+   Fix:  vals.ptp() → vals.max() - vals.min()
+
+2. AttributeError: 'int' object has no attribute 'set_xlim'
+   File: wrist_live.py (_update function)
+   Root cause: Loop iterated over proj_cfg which started with an integer
+               column index — that integer got bound to `ax` variable.
+   Fix:  Changed loop variable to unpack from ori_axes (list of (Axes, key)
+         tuples) instead of proj_cfg (list of (int, key, ...) tuples):
+         `for col, (ax, key) in enumerate(ori_axes):`
+
+
+────────────────────────────────────────────────────────────────────────────────
+GIT STATUS (at end of session)
+────────────────────────────────────────────────────────────────────────────────
+
+Branch: main
+Modified (tracked):
+  config/left_arm.json
+  config/right_arm.json
+  launch/so101_bridge.launch.py
+  src/fk_ik_2dof_dual.py
+  src/so101.py
+  src/so101_bridge_left.py
+  src/so101_bridge_right.py
+
+New (untracked):
+  config/ports.json
+  src/calibrate_arm.py
+  src/setup_and_launch.py
+  src/teleop_bridge_node.py
+  src/wrist_tracker.py       ← created this session
+  src/wrist_live.py          ← created this session
+  src/wrist_servo.py         ← created this session (combines roll+yaw)
+  src/roll_servo4.py         ← created this session (superseded)
+  src/yaw_servo5.py          ← created this session (superseded)
+
+
+────────────────────────────────────────────────────────────────────────────────
+POSSIBLE NEXT STEPS (not yet done)
+────────────────────────────────────────────────────────────────────────────────
+
+- Integrate IK (fk_ik_2dof_dual.py) with wrist position data to control
+  shoulder_lift (servo 2) and elbow_flex (servo 3) from VR wrist XYZ.
+- Add shoulder_pan (servo 1) control from VR wrist lateral X position.
+- Add gripper (servo 6) control from a VR button or pinch gesture.
+- Tune ACTIVITY_WINDOW and DEADBAND values based on real hardware testing.
+- Add hysteresis to dominance switching to prevent rapid toggling when
+  roll_act ≈ yaw_act.
+- Consider a "hold last" mode: when neither axis is clearly dominant,
+  hold the last sent tick rather than going idle.
+
+================================================================================
+END OF LOG
+================================================================================
