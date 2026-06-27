@@ -35,7 +35,7 @@ LEFT_ZERO_TARGETS = {
     "elbow_flex":    0.0,
     "wrist_flex":    0.0,
     "wrist_roll":    LEFT_WRIST_ROLL_ZERO,
-    "gripper":       0.0,
+    "gripper":       -90.0,
 }
 
 RIGHT_ZERO_TARGETS = {
@@ -44,7 +44,7 @@ RIGHT_ZERO_TARGETS = {
     "elbow_flex":    0.0,
     "wrist_flex":    0.0,
     "wrist_roll":    RIGHT_WRIST_ROLL_ZERO,
-    "gripper":       0.0,
+    "gripper":       -90.0,
 }
 
 ENABLE_TORQUE_CMD = {"topic": "enable_torque"}

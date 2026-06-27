@@ -5,7 +5,7 @@ ik_control.py — VR wrist pose → SO-101 full-arm IK → dual-arm teleoperatio
 IK solver: PyBullet (DIRECT/headless mode).
 IK joints: shoulder_pan(1), shoulder_lift(2), elbow_flex(3),
            wrist_flex(4), wrist_roll(5).
-Gripper (6) is excluded from IK — held at neutral.
+Gripper (6) is driven by thumb-index pinch distance — not part of IK.
 
 Frame calibration
 ─────────────────
@@ -27,6 +27,7 @@ Reference-latching position control
 
 Subscribes to IPC bus port 5555 (VR data):
     left_wrist / right_wrist   → x, y, z, qx, qy, qz, qw
+    left_pinch / right_pinch   → distance_cm   (thumb-index pinch → gripper)
 
 Sends to arm bridges via IPC bus:
     port 5556  left arm  → topic "set_positions"
@@ -101,6 +102,15 @@ _ALL_REST   = [0.0] * len(_ALL_LOWER)
 
 EE_LINK = "gripper_link"
 DEFAULT_MAX_DELTA_M = 0.05
+
+# ── Gripper / pinch constants ─────────────────────────────────────────────────
+# Thumb-index pinch distance is clamped to [PINCH_MIN_CM, PINCH_MAX_CM] and
+# linearly mapped onto the gripper joint range.
+PINCH_MIN_CM       = 2.0    # fully pinched  → gripper closed
+PINCH_MAX_CM       = 10.0   # fingers open   → gripper open
+PINCH_SPIKE_CM     = 5.0    # cm — reject sudden jumps larger than this
+_GRIPPER_LOWER_DEG = -90.0  # angle at minimum pinch (2 cm)
+_GRIPPER_UPPER_DEG =  90.0  # angle at maximum pinch (10 cm)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -479,6 +489,7 @@ class _ArmController:
         self._ik             = SO101IKSolver(urdf_path)
         self._ref_pos: Optional[np.ndarray] = None
         self._last_target    = self._ik.ee_home.copy()
+        self._last_pinch_cm: Optional[float] = None
 
         port = LEFT_ARM_CMD_PORT if side == "left" else RIGHT_ARM_CMD_PORT
         self._cmd = CommandClient(port)
@@ -520,6 +531,23 @@ class _ArmController:
         self._cmd.send({
             "topic": "set_positions",
             "data":  {k: round(v, 3) for k, v in joints.items()},
+        })
+
+    def on_pinch(self, data: dict) -> None:
+        dist = float(data.get("distance_cm", PINCH_MAX_CM))
+        dist = max(PINCH_MIN_CM, min(PINCH_MAX_CM, dist))
+
+        if (self._last_pinch_cm is not None and
+                abs(dist - self._last_pinch_cm) > PINCH_SPIKE_CM):
+            return
+        self._last_pinch_cm = dist
+
+        fraction  = (dist - PINCH_MIN_CM) / (PINCH_MAX_CM - PINCH_MIN_CM)
+        angle_deg = _GRIPPER_LOWER_DEG + fraction * (_GRIPPER_UPPER_DEG - _GRIPPER_LOWER_DEG)
+
+        self._cmd.send({
+            "topic": "set_positions",
+            "data":  {"gripper": round(angle_deg, 3)},
         })
 
     def close(self) -> None:
@@ -573,6 +601,10 @@ class IKControl:
                 self._arms["left"].on_pose(data)
             elif topic == "right_wrist" and "right" in self._sides:
                 self._arms["right"].on_pose(data)
+            elif topic == "left_pinch" and "left" in self._sides:
+                self._arms["left"].on_pinch(data)
+            elif topic == "right_pinch" and "right" in self._sides:
+                self._arms["right"].on_pinch(data)
 
     def close(self) -> None:
         self._running = False
