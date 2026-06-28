@@ -487,7 +487,8 @@ class _ArmController:
         self._vr_bounds  = vr_bounds
 
         self._ik             = SO101IKSolver(urdf_path)
-        self._ref_pos: Optional[np.ndarray] = None
+        self._ref_pos:  Optional[np.ndarray] = None
+        self._ref_quat: Optional[ScipyR]     = None
         self._last_target    = self._ik.ee_home.copy()
         self._last_pinch_cm: Optional[float] = None
 
@@ -501,7 +502,8 @@ class _ArmController:
         vquat = np.array([data["qx"], data["qy"], data["qz"], data["qw"]])
 
         if self._ref_pos is None:
-            self._ref_pos = vpos.copy()
+            self._ref_pos  = vpos.copy()
+            self._ref_quat = ScipyR.from_quat(vquat)
             print(f"[ik_control] [{self.side}] Reference latched: {np.round(vpos, 4)}")
 
         delta_vr = vpos - self._ref_pos
@@ -527,6 +529,26 @@ class _ArmController:
         except Exception as exc:
             print(f"[ik_control] [{self.side}] IK failed: {exc}", file=sys.stderr)
             return
+
+        # Direct wrist override — relative rotation from reference pose mapped
+        # straight to wrist_roll (5) and wrist_flex (4), bypassing IK for those
+        # joints so wrist tracking is 1:1 and jitter-free.
+        if self._ref_quat is not None:
+            q_rel = self._ref_quat.inv() * ScipyR.from_quat(vquat)
+            qx, qy, qz, qw = q_rel.as_quat()
+            roll  = math.atan2(2.0*(qw*qx + qy*qz), 1.0 - 2.0*(qx*qx + qy*qy))
+            pitch = math.asin(max(-1.0, min(1.0, 2.0*(qw*qy - qz*qx))))
+            yaw   = math.atan2(2.0*(qw*qz + qx*qy), 1.0 - 2.0*(qy*qy + qz*qz))
+
+            # When wrist_roll turns, the flex axis rotates with it — blend roll
+            # and pitch to get the axis-aligned flex component.
+            effective_flex = roll * math.cos(yaw) - pitch * math.sin(yaw)
+
+            wrist_roll_rad = float(np.clip(-yaw,            JOINT_LOWER[4], JOINT_UPPER[4]))
+            wrist_flex_rad = float(np.clip(-effective_flex, JOINT_LOWER[3], JOINT_UPPER[3]))
+
+            joints["wrist_roll"] = round(math.degrees(wrist_roll_rad), 3)
+            joints["wrist_flex"] = round(math.degrees(wrist_flex_rad), 3)
 
         self._cmd.send({
             "topic": "set_positions",
