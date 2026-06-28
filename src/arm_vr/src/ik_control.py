@@ -112,6 +112,61 @@ PINCH_SPIKE_CM     = 5.0    # cm — reject sudden jumps larger than this
 _GRIPPER_LOWER_DEG = -90.0  # angle at minimum pinch (2 cm)
 _GRIPPER_UPPER_DEG =  90.0  # angle at maximum pinch (10 cm)
 
+# ── One Euro Filter tuning ────────────────────────────────────────────────────
+# fc_min : cutoff at rest (Hz) — lower → smoother but more lag when still
+# beta   : speed coefficient  — higher → more responsive during fast movement
+# fc_d   : cutoff for the internal derivative estimate (Hz)
+_OEF_FC_MIN = 1.5
+_OEF_BETA   = 0.1
+_OEF_FC_D   = 1.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Coordinate frame mapping: VR → arm base frame
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# One Euro Filter — adaptive low-pass filter for smooth real-time tracking
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _OneEuroFilter:
+    """Jitter suppressor that stays responsive during fast intentional motion.
+
+    At low speed the cutoff drops to fc_min (heavy smoothing).
+    At high speed the cutoff rises with |velocity| * beta (passes through fast moves).
+    """
+
+    def __init__(self, fc_min: float = _OEF_FC_MIN,
+                 beta: float = _OEF_BETA,
+                 fc_d: float = _OEF_FC_D) -> None:
+        self._fc_min  = fc_min
+        self._beta    = beta
+        self._fc_d    = fc_d
+        self._x_prev: Optional[float] = None
+        self._dx_hat: float = 0.0
+        self._t_prev: Optional[float] = None
+
+    @staticmethod
+    def _alpha(fc: float, dt: float) -> float:
+        r = 2.0 * math.pi * fc * dt
+        return r / (r + 1.0)
+
+    def __call__(self, x: float, t: float) -> float:
+        if self._x_prev is None:
+            self._x_prev = x
+            self._t_prev = t
+            return x
+        dt = max(t - self._t_prev, 1e-6)
+        self._t_prev = t
+
+        dx = (x - self._x_prev) / dt
+        self._dx_hat = self._alpha(self._fc_d, dt) * dx + (1.0 - self._alpha(self._fc_d, dt)) * self._dx_hat
+
+        fc    = self._fc_min + self._beta * abs(self._dx_hat)
+        x_hat = self._alpha(fc, dt) * x + (1.0 - self._alpha(fc, dt)) * self._x_prev
+        self._x_prev = x_hat
+        return x_hat
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Coordinate frame mapping: VR → arm base frame
@@ -491,6 +546,9 @@ class _ArmController:
         self._ref_quat: Optional[ScipyR]     = None
         self._last_target    = self._ik.ee_home.copy()
         self._last_pinch_cm: Optional[float] = None
+        self._filters: dict[str, _OneEuroFilter] = {
+            name: _OneEuroFilter() for name in [*IK_JOINT_NAMES, "gripper"]
+        }
 
         port = LEFT_ARM_CMD_PORT if side == "left" else RIGHT_ARM_CMD_PORT
         self._cmd = CommandClient(port)
@@ -550,9 +608,12 @@ class _ArmController:
             joints["wrist_roll"] = round(math.degrees(wrist_roll_rad), 3)
             joints["wrist_flex"] = round(math.degrees(wrist_flex_rad), 3)
 
+        t_now  = time.monotonic()
+        joints = {k: round(self._filters[k](v, t_now), 3) for k, v in joints.items()}
+
         self._cmd.send({
             "topic": "set_positions",
-            "data":  {k: round(v, 3) for k, v in joints.items()},
+            "data":  joints,
         })
 
     def on_pinch(self, data: dict) -> None:
@@ -566,6 +627,7 @@ class _ArmController:
 
         fraction  = (dist - PINCH_MIN_CM) / (PINCH_MAX_CM - PINCH_MIN_CM)
         angle_deg = _GRIPPER_LOWER_DEG + fraction * (_GRIPPER_UPPER_DEG - _GRIPPER_LOWER_DEG)
+        angle_deg = self._filters["gripper"](angle_deg, time.monotonic())
 
         self._cmd.send({
             "topic": "set_positions",
